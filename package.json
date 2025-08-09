@@ -1,0 +1,12 @@
+{
+  "name": "css-layout-designer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:runtime": "node test/runtime-check.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}
