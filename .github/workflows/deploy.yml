@@ -32,9 +32,14 @@ jobs:
           GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
         run: |
           set -e
+          if [ -z "$GH_PAGES_TOKEN" ]; then
+            echo "GH_PAGES_TOKEN secret is missing" >&2
+            exit 1
+          fi
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git clone --depth 1 https://x-access-token:${GH_PAGES_TOKEN}@github.com/cosinusalpha/cosinusalpha.github.io.git gh-pages
+          # Clone user pages repo using PAT (format: https://TOKEN@github.com/owner/repo.git)
+          git clone --depth 1 https://${GH_PAGES_TOKEN}@github.com/cosinusalpha/cosinusalpha.github.io.git gh-pages || { echo "Clone failed"; exit 1; }
           mkdir -p gh-pages/css-layout
           rm -rf gh-pages/css-layout/*
           cp -r dist/* gh-pages/css-layout/
