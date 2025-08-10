@@ -3,8 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
+  },
   "scripts": {
-    "test:runtime": "node test/runtime-check.js"
+  "test:runtime": "node test/runtime-check.js",
+  "build": "node scripts/build.mjs",
+  "build:docs": "npm run build && rm -rf docs && cp -r dist docs"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"
