@@ -5,7 +5,29 @@ class CSSEditor {
     this.propertyEditDevice = 'desktop';
     // Explicit device state for preview (avoid relying on measured widths which can be stale)
     this.currentDevice = 'desktop';
-        this.render();
+    // Multi-select support
+    this.multiSelected = new Set();
+    this.draggingEl = null;
+    this.dragOverEl = null;
+    this.dragGroup = null; // array of elements when multi-drag
+    this._dndInsertMarker = null;
+    this.copiedStyles = null; // for copy/paste styles
+    this.prefs = { autoUpdate:true, prune:true, codeFormat:'css', minify:false, editDevice:'desktop' };
+    // History & persistence state
+    this.undoStack = [];
+    this.redoStack = [];
+    this.maxHistory = 80;
+    this._historyDebounce = null;
+    this._pendingHistoryLabel = null;
+    document.addEventListener('keydown', (e) => this.handleKeyShortcuts(e));
+    this.render();
+    this.loadPreferences();
+    this.applyPreferencesToUI();
+    this.installPreferenceBindings();
+    // Attempt auto-restore from last session (best-effort)
+    this.autoRestoreFromLocal();
+    // Initial snapshot (empty canvas)
+    this.captureSnapshot('init');
     }
 
     render() {
@@ -16,16 +38,37 @@ class CSSEditor {
                     <button id="add-row-btn">Add Row</button>
                     <button id="add-col-btn">Add Column</button>
                     <button id="add-grid-btn">Add Grid</button>
+                    <div class="history-row">
+                        <button id="undo-btn" class="history-btn" title="Undo (Ctrl+Z)" disabled>Undo</button>
+                        <button id="redo-btn" class="history-btn" title="Redo (Ctrl+Y)" disabled>Redo</button>
+                    </div>
+                    <button id="save-layout-btn" style="background:#198754;">Save</button>
+                    <button id="load-layout-btn" style="background:#6c757d;">Load</button>
+                    <input type="file" id="load-file-input" accept="application/json" style="display:none;" />
                 </div>
                 <button id="clear-btn">Clear Canvas</button>
                 <div class="preset-container">
                     <label for="preset-select">Presets</label>
                     <select id="preset-select">
                         <option value="">Select a preset</option>
-                        <option value="header-content-footer">Header, Content, Footer</option>
-                        <option value="sidebar-layout">Sidebar Layout</option>
-                        <option value="grid-2col-hero">Grid 2-Col Hero</option>
+                        <option value="header-content-footer">Header / Content / Footer</option>
+                        <option value="sidebar-layout">Sidebar (Left) + Content</option>
+                        <option value="sidebar-right-layout">Sidebar (Right) + Content</option>
+                        <option value="dashboard-app-shell">App Shell (Header / Sidebar / Main)</option>
+                        <option value="grid-2col-hero">Marketing Hero (2 Columns)</option>
+                        <option value="grid-gallery">Image Gallery Grid</option>
+                        <option value="form-page">Form Page (Title + Form + Sidebar tips)</option>
+                        <option value="win-classic">Desktop App (Menu / Sidebar / Workspace / Status)</option>
+                        <option value="blog-post">Blog Post (Title / Meta / Body / Aside)</option>
                     </select>
+                </div>
+                <div class="component-section">
+                    <h3 class="mini-h">Components</h3>
+                    <div class="component-controls">
+                        <input type="text" id="component-name" placeholder="Name" />
+                        <button id="save-component-btn" title="Save selected subtree as component" disabled>Save Sel</button>
+                    </div>
+                    <ul id="component-list" aria-label="Saved components"></ul>
                 </div>
             </div>
             <div id="canvas">
@@ -38,61 +81,75 @@ class CSSEditor {
                     <div id="preview"></div>
                 </div>
             </div>
-                        <div class="panel" id="right-panel">
-                                <div id="properties-section">
-                                    <div class="section-header">
-                                        <h2>Properties</h2>
-                                        <div id="prop-device-tabs" aria-label="Edit breakpoints">
-                                            <button data-dev="desktop" class="active" title="Edit desktop styles">D</button>
-                                            <button data-dev="tablet" title="Edit tablet styles">T</button>
-                                            <button data-dev="mobile" title="Edit mobile styles">M</button>
-                                        </div>
-                                    </div>
-                                    <div id="properties-panel-content">
-                                            <p>Select an element to edit its properties.</p>
-                                    </div>
-                                </div>
-                                <div id="code-section">
-                                    <h2>Code</h2>
-                                    <div id="code-panel-content">
-                    <div class="code-format-container">
-                        <label for="code-format-select">Format</label>
-                        <select id="code-format-select">
-                            <option value="css">Pure CSS</option>
-                            <option value="tailwind">Tailwind CSS</option>
-                        </select>
-                    </div>
-                                        <label style="display:flex; align-items:center; gap:6px; font-size:0.7rem; margin:6px 0 10px;">
-                                            <input type="checkbox" id="auto-update-code" checked>
-                                            <span>Auto Update Code</span>
-                                        </label>
-                    <button id="generate-code-btn">Generate Code</button>
-                                        <button id="open-code-modal-btn">Open Large Viewer</button>
-                    <pre id="html-code"></pre>
-                    <pre id="css-code"></pre>
-                                    </div>
-                                </div>
-            </div>
-                        <div id="code-modal-overlay">
-                            <div id="code-modal" role="dialog" aria-modal="true" aria-label="Generated Code">
-                                <header>
-                                    <h3>Generated Code</h3>
-                                    <button class="close-btn" id="close-code-modal">Close</button>
-                                </header>
-                                <div class="tab-bar">
-                                    <button class="code-tab active" data-target="modal-html">HTML</button>
-                                    <button class="code-tab" data-target="modal-css">CSS</button>
-                                </div>
-                                <div class="code-pane" id="modal-html" data-kind="html"><pre id="modal-html-pre"></pre></div>
-                                <div class="code-pane" id="modal-css" data-kind="css" style="display:none;"><pre id="modal-css-pre"></pre></div>
-                                <div class="actions">
-                                    <button id="copy-current-btn">Copy Current Tab</button>
-                                    <button id="copy-all-btn" class="secondary">Copy Both</button>
-                                    <button id="download-zip-btn" class="secondary">Download Files</button>
-                                </div>
-                            </div>
+            <div class="panel" id="right-panel">
+                <div id="properties-section">
+                    <div class="section-header">
+                        <h2>Properties</h2>
+                        <div id="prop-device-tabs" aria-label="Edit breakpoints">
+                            <button data-dev="desktop" class="active" title="Edit desktop styles">D</button>
+                            <button data-dev="tablet" title="Edit tablet styles">T</button>
+                            <button data-dev="mobile" title="Edit mobile styles">M</button>
                         </div>
-        `;
+                    </div>
+                    <div id="breadcrumb" class="breadcrumb"></div>
+                    <div id="properties-panel-content">
+                        <p>Select an element to edit its properties.</p>
+                    </div>
+                </div>
+                <div id="code-section">
+                    <h2>Code</h2>
+                    <div id="code-panel-content">
+                        <div class="code-format-container">
+                            <label for="code-format-select">Format</label>
+                            <select id="code-format-select">
+                                <option value="css">Pure CSS</option>
+                                <option value="tailwind">Tailwind CSS</option>
+                            </select>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.7rem; margin:4px 0 6px;">
+                            <input type="checkbox" id="prune-overrides-export" checked>
+                            <span>Prune redundant overrides on export</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.7rem; margin:0 0 6px;">
+                            <input type="checkbox" id="minify-export">
+                            <span>Minify HTML & CSS</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.7rem; margin:0 0 10px;">
+                            <input type="checkbox" id="remember-splits">
+                            <span>Remember split sizes (export)</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.7rem; margin:6px 0 10px;">
+                            <input type="checkbox" id="auto-update-code" checked>
+                            <span>Auto Update Code</span>
+                        </label>
+                        <button id="generate-code-btn">Generate Code</button>
+                        <button id="run-validation-btn" class="secondary-action" style="margin-top:4px;">Run Validation</button>
+                        <button id="open-code-modal-btn">Open Large Viewer</button>
+                        <pre id="html-code"></pre>
+                        <pre id="css-code"></pre>
+                        <div id="validation-results" class="validation-results" aria-live="polite"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="code-modal-overlay">
+                <div id="code-modal" role="dialog" aria-modal="true" aria-label="Generated Code">
+                    <header>
+                        <h3>Generated Code</h3>
+                        <button class="close-btn" id="close-code-modal">Close</button>
+                    </header>
+                    <div class="tab-bar">
+                        <button class="code-tab active" data-target="modal-html">HTML</button>
+                        <button class="code-tab" data-target="modal-css">CSS</button>
+                    </div>
+                    <div class="code-pane" id="modal-html" data-kind="html"><pre id="modal-html-pre"></pre></div>
+                    <div class="code-pane" id="modal-css" data-kind="css" style="display:none;"><pre id="modal-css-pre"></pre></div>
+                    <div class="actions">
+                        <button id="copy-current-btn">Copy Current Tab</button>
+                        <button id="copy-all-btn" class="secondary">Copy Both</button>
+                        <button id="download-zip-btn" class="secondary">Download Files</button>
+                    </div>
+                </div>
+            </div>`;
 
         this.preview = this.app.querySelector('#preview');
 
@@ -100,9 +157,15 @@ class CSSEditor {
         this.app.querySelector('#tablet-btn').addEventListener('click', () => this.setDevice('tablet'));
         this.app.querySelector('#mobile-btn').addEventListener('click', () => this.setDevice('mobile'));
 
-        this.app.querySelector('#add-row-btn').addEventListener('click', () => this.addElement('row'));
+    this.app.querySelector('#add-row-btn').addEventListener('click', () => this.addElement('row'));
         this.app.querySelector('#add-col-btn').addEventListener('click', () => this.addElement('col'));
     this.app.querySelector('#add-grid-btn').addEventListener('click', () => this.addElement('grid'));
+    this.app.querySelector('#save-layout-btn').addEventListener('click', () => this.downloadLayout());
+    this.app.querySelector('#load-layout-btn').addEventListener('click', () => this.app.querySelector('#load-file-input').click());
+    this.app.querySelector('#load-file-input').addEventListener('change', (e)=> this.handleFileLoad(e));
+    // History buttons
+    this.app.querySelector('#undo-btn').addEventListener('click', () => { this.undo(); });
+    this.app.querySelector('#redo-btn').addEventListener('click', () => { this.redo(); });
 
     this.selectedElement = null;
         this.preview.addEventListener('click', (e) => this.selectElement(e));
@@ -110,6 +173,12 @@ class CSSEditor {
     this.app.querySelector('#open-code-modal-btn').addEventListener('click', () => this.openCodeModal());
         this.app.querySelector('#clear-btn').addEventListener('click', () => this.clearCanvas());
         this.app.querySelector('#preset-select').addEventListener('change', (e) => this.loadPreset(e.target.value));
+    this.app.querySelector('#run-validation-btn').addEventListener('click', ()=> this.runValidation());
+    // Component events
+    this.loadComponents();
+    this.renderComponentList();
+    this.app.querySelector('#component-name').addEventListener('input', ()=> this.updateComponentSaveButton());
+    this.app.querySelector('#save-component-btn').addEventListener('click', ()=> this.saveCurrentComponent());
 
         // Property edit device tabs
         this.app.addEventListener('click', (e) => {
@@ -207,45 +276,47 @@ class CSSEditor {
 
         target.appendChild(newElement);
         this.applyStyles();
+    this.captureSnapshot('add:'+type);
     }
 
     selectElement(e) {
-        if (e.target === this.preview) return;
-        if (this.selectedElement) {
-            this.selectedElement.classList.remove('selected');
+        const target = e.target;
+        if (target === this.preview) return;
+        const isModifier = e.metaKey || e.ctrlKey;
+        const isShift = e.shiftKey;
+        // Initialize selection baseline
+        if (!isModifier && !isShift) {
+            // Clear previous
+            this.multiSelected.forEach(el => el.classList.remove('selected')); this.multiSelected.clear();
         }
-        this.selectedElement = e.target;
-        this.selectedElement.classList.add('selected');
+        let toSelect = [target];
+        if (isShift && this.selectedElement && this.selectedElement.parentElement === target.parentElement) {
+            const siblings = Array.from(target.parentElement.children);
+            const a = siblings.indexOf(this.selectedElement);
+            const b = siblings.indexOf(target);
+            if (a !== -1 && b !== -1) {
+                const [min,max] = a < b ? [a,b] : [b,a];
+                toSelect = siblings.slice(min, max+1);
+            }
+        }
+        toSelect.forEach(el => {
+            if (this.multiSelected.has(el) && (isModifier || isShift)) {
+                // toggle off
+                this.multiSelected.delete(el);
+                el.classList.remove('selected');
+            } else {
+                this.multiSelected.add(el);
+                el.classList.add('selected');
+            }
+        });
+        // Primary selectedElement is last in toSelect that is still selected
+        const last = toSelect[toSelect.length-1];
+        if (last && this.multiSelected.has(last)) this.selectedElement = last;
+        else this.selectedElement = this.multiSelected.size ? Array.from(this.multiSelected).slice(-1)[0] : null;
         this.updatePropertiesPanel();
         e.stopPropagation();
     }
 
-    generateCode() {
-    if (this._generating) return; // guard
-    this._generating = true;
-        const format = this.app.querySelector('#code-format-select').value;
-        const previewClone = this.preview.cloneNode(true);
-        
-        if (format === 'tailwind') {
-            this.generateTailwind(previewClone);
-            const visibilityNotes = this.buildVisibilityNotes(previewClone, 'tailwind');
-            this.cleanupForExport(previewClone);
-            const htmlContent = this.extractInnerContent(previewClone);
-            this.app.querySelector('#html-code').textContent = this.formatHTML(htmlContent);
-            this.app.querySelector('#css-code').textContent = '/* Tailwind CSS classes are applied directly in the HTML. */' + (visibilityNotes ? `\n\n/* Visibility Notes:\n${visibilityNotes}\n*/` : '');
-        } else {
-            const cssRules = this.generateCSS(previewClone);
-            const visibilityNotes = this.buildVisibilityNotes(previewClone, 'css');
-            this.cleanupForExport(previewClone);
-            const htmlContent = this.extractInnerContent(previewClone);
-            this.app.querySelector('#html-code').textContent = this.formatHTML(htmlContent);
-            this.app.querySelector('#css-code').textContent = cssRules + (visibilityNotes ? `\n/* Visibility Notes:\n${visibilityNotes}\n*/\n` : '');
-        }
-    // Sync modal content if open
-    if (this.codeModalOpen) this.syncModalCode();
-    this.generatedOnce = true;
-    this._generating = false;
-    }
 
     generateTailwind(element) {
         // Add base flex container to the root if it has children
@@ -258,6 +329,21 @@ class CSSEditor {
         element.querySelectorAll('*').forEach(el => {
             if (el.dataset.styles) {
                 const styles = JSON.parse(el.dataset.styles);
+                
+                // Handle visibility for Tailwind export
+                if (styles.desktop?.__hidden) {
+                    if (!styles.desktop) styles.desktop = {};
+                    styles.desktop.display = 'none';
+                }
+                if (styles.tablet?.__hidden) {
+                    if (!styles.tablet) styles.tablet = {};
+                    styles.tablet.display = 'none';
+                }
+                if (styles.mobile?.__hidden) {
+                    if (!styles.mobile) styles.mobile = {};
+                    styles.mobile.display = 'none';
+                }
+
                 let classes = [];
                 const isGrid = el.classList.contains('grid-container');
                 if (isGrid) {
@@ -285,7 +371,7 @@ class CSSEditor {
             display: { flex: 'flex', block: 'block', 'inline-block': 'inline-block', none: 'hidden', grid: 'grid' },
             flexDirection: { row: 'flex-row', column: 'flex-col' },
             gap: (v) => {
-                const predefined = { '0':'gap-0','4px':'gap-1','8px':'gap-2','12px':'gap-3','16px':'gap-4','20px':'gap-5','24px':'gap-6','32px':'gap-8'};
+                const predefined = { '0':'gap-0','2px':'gap-px','4px':'gap-1','8px':'gap-2','12px':'gap-3','16px':'gap-4','20px':'gap-5','24px':'gap-6','28px':'gap-7','32px':'gap-8','40px':'gap-10','48px':'gap-12'};
                 return predefined[v] || `gap-[${v}]`;
             },
             gridTemplateColumns: (v) => {
@@ -320,6 +406,14 @@ class CSSEditor {
                 if (v === '50%') return 'w-1/2';
                 if (v === '25%') return 'w-1/4';
                 if (v === '75%') return 'w-3/4';
+                if (v === '33.333%' || v === '33.33%') return 'w-1/3';
+                if (v === '66.667%' || v === '66.66%') return 'w-2/3';
+                if (v === '20%') return 'w-1/5';
+                if (v === '40%') return 'w-2/5';
+                if (v === '60%') return 'w-3/5';
+                if (v === '80%') return 'w-4/5';
+                if (v === '16.667%' || v === '16.66%') return 'w-1/6';
+                if (v === '83.333%' || v === '83.33%') return 'w-5/6';
                 if (v === 'auto') return 'w-auto';
                 return `w-[${v}]`;
             },
@@ -348,6 +442,16 @@ class CSSEditor {
                 if (v === '0') return 'p-0';
                 return `p-[${v}]`;
             },
+            flexWrap: { 'wrap':'flex-wrap', 'nowrap':'flex-nowrap', 'wrap-reverse':'flex-wrap-reverse' },
+            alignSelf: { 'flex-start':'self-start', 'flex-end':'self-end', 'center':'self-center', 'stretch':'self-stretch' },
+            paddingTop: (v) => v==='0'? 'pt-0': `pt-[${v}]`,
+            paddingRight: (v) => v==='0'? 'pr-0': `pr-[${v}]`,
+            paddingBottom: (v) => v==='0'? 'pb-0': `pb-[${v}]`,
+            paddingLeft: (v) => v==='0'? 'pl-0': `pl-[${v}]`,
+            marginTop: (v) => v==='0'? 'mt-0': (v==='auto'?'mt-auto': `mt-[${v}]`),
+            marginRight: (v) => v==='0'? 'mr-0': (v==='auto'?'mr-auto': `mr-[${v}]`),
+            marginBottom: (v) => v==='0'? 'mb-0': (v==='auto'?'mb-auto': `mb-[${v}]`),
+            marginLeft: (v) => v==='0'? 'ml-0': (v==='auto'?'ml-auto': `ml-[${v}]`),
         };
         
         const m = mapping[prop];
@@ -365,11 +469,46 @@ class CSSEditor {
                 if (el.classList.contains('grid-item')) el.classList.remove('grid-item');
                 if (el.classList.length === 0) el.removeAttribute('class');
             el.removeAttribute('style');
+            
+            // Clean up visibility flags from styles and dataset
+            if (el.dataset.styles) {
+                try {
+                    const styles = JSON.parse(el.dataset.styles);
+                    delete styles.desktop?.__hidden;
+                    delete styles.tablet?.__hidden;
+                    delete styles.mobile?.__hidden;
+                    el.dataset.styles = JSON.stringify(styles);
+                } catch {}
+            }
+            delete el.dataset.hideDesktop;
+            delete el.dataset.hideTablet;
+            delete el.dataset.hideMobile;
+
             el.removeAttribute('data-styles');
                 el.removeAttribute('data-responsive-stack');
             el.removeAttribute('contenteditable');
+            el.removeAttribute('data-user-class');
+            el.removeAttribute('data-user-tag');
+            el.removeAttribute('data-grid-stack');
+            // Preserve export-split marker for later script injection
+            if (el.dataset.exportSplit === 'true') el.setAttribute('data-export-split','true');
             if (el.textContent.trim() === 'Row' || el.textContent.trim() === 'Col') {
                 el.textContent = '';
+            }
+        });
+    }
+
+    applySemanticTransform(root) {
+        root.querySelectorAll('[data-user-tag], [data-user-class]').forEach(el => {
+            const tag = el.getAttribute('data-user-tag');
+            const cls = el.getAttribute('data-user-class');
+            if (tag && tag.toLowerCase() !== 'div') {
+                const replacement = document.createElement(tag);
+                while (el.firstChild) replacement.appendChild(el.firstChild);
+                if (cls) replacement.className = cls; else if (el.className) replacement.className = el.className;
+                el.parentNode.replaceChild(replacement, el);
+            } else if (cls) {
+                if (!el.className) el.className = cls; else el.classList.add(cls);
             }
         });
     }
@@ -412,53 +551,80 @@ class CSSEditor {
                 return out.map(l=>l.slice(leadingSpaces)).join('\n');
             }
             return out.join('\n');
-        } catch(e) {
-            return html;
-        }
+        } catch(e) { return html; }
     }
 
-    generateCSS(element) {
-        let cssText = '';
-        const elementsWithStyle = Array.from(element.querySelectorAll('[data-styles]'));
-        elementsWithStyle.forEach((el, i) => {
-            const className = `layout-el-${i + 1}`;
-            el.classList.add(className);
-            const styles = JSON.parse(el.dataset.styles);
-                const isRow = el.classList.contains('row');
-            const isGrid = el.classList.contains('grid-container');
-                const responsiveStack = el.dataset.responsiveStack === 'true';
-            const gridStack = el.dataset.gridStack === 'true';
+    // Reintroduced: generate pure CSS with mobile-first media queries
+    generateCSS(root){
+        const desktopRules=[]; const tabletRules=[]; const mobileRules=[];
+        let counter=0;
+        const elements=[root, ...root.querySelectorAll('*')];
+        elements.forEach(el=>{
+            if(!el.dataset || !el.dataset.styles) return;
+            let styles; try { styles=JSON.parse(el.dataset.styles); } catch { return; }
+            const cls = el.getAttribute('data-user-class') || ('el-'+(++counter));
+            if(!el.classList.contains(cls)) el.classList.add(cls);
+            const sel = '.'+cls;
             
-            let css = '';
-            for(const device in styles) {
-                const deviceStyles = styles[device];
-                    if ((device === 'tablet' || device === 'mobile') && responsiveStack && isRow && !('flexDirection' in deviceStyles)) {
-                        deviceStyles.flexDirection = 'column';
-                    }
-                    if ((device === 'tablet' || device === 'mobile') && gridStack && isGrid && !('gridTemplateColumns' in deviceStyles)) {
-                        deviceStyles.gridTemplateColumns = '1fr';
-                    }
-                if(Object.keys(deviceStyles).length > 0) {
-                    if (device === 'desktop') {
-                        css += `.${className} {
-${this.formatCSS(deviceStyles)}}
+            // Handle visibility first
+            if (styles.desktop?.__hidden) styles.desktop.display = 'none';
+            if (styles.tablet?.__hidden) styles.tablet.display = 'none';
+            if (styles.mobile?.__hidden) styles.mobile.display = 'none';
 
-`;
-                    } else {
-                        const media = device === 'tablet' ? '@media (max-width: 768px)' : '@media (max-width: 375px)';
-                        css += `${media} {
-  .${className} {
-${this.formatCSS(deviceStyles, '    ')}}
-}
-
-`;
-                    }
-                }
-            }
-            cssText += css;
+            const desk=styles.desktop||{}; const tab=styles.tablet||{}; const mob=styles.mobile||{};
+            const deskCss=this.formatCSS(desk,'  ');
+            if(deskCss.trim()) desktopRules.push(`${sel} {\n${deskCss}}`);
+            const tabCss=this.formatCSS(tab,'  ');
+            if(tabCss.trim()) tabletRules.push(`${sel} {\n${tabCss}}`);
+            const mobCss=this.formatCSS(mob,'  ');
+            if(mobCss.trim()) mobileRules.push(`${sel} {\n${mobCss}}`);
         });
-        return cssText;
+        // Media queries: assume breakpoints (tablet >= 768px, desktop >= 1024px) consistent with UI
+        let css='';
+        if(mobileRules.length) css+=`/* Mobile */\n${mobileRules.join('\n\n')}\n\n`;
+        if(tabletRules.length) css+=`@media (min-width: 768px) {\n${tabletRules.join('\n\n')}\n}\n\n`;
+        if(desktopRules.length) css+=`@media (min-width: 1024px) {\n${desktopRules.join('\n\n')}\n}\n`;
+        return css.trim();
     }
+
+    generateCode() {
+        if (this._generating) return; // guard re-entry
+        this._generating = true;
+        try {
+            const format = this.app.querySelector('#code-format-select').value;
+            const doMinify = this.prefs.minify || !!this.app.querySelector('#minify-export')?.checked;
+            const previewClone = this.preview.cloneNode(true);
+            if (format === 'tailwind') {
+                this.generateTailwind(previewClone);
+                const visibilityNotes = this.buildVisibilityNotes(previewClone, 'tailwind');
+                this.cleanupForExport(previewClone);
+                this.applySemanticTransform(previewClone);
+                this.prepareExportSplits(previewClone);
+                const rawHtml = this.extractInnerContent(previewClone);
+                const htmlContent = doMinify ? this.formatHTML(rawHtml,{compact:true}) : this.formatHTML(rawHtml);
+                this.app.querySelector('#html-code').textContent = htmlContent;
+                this.app.querySelector('#css-code').textContent = '/* Tailwind CSS classes are applied directly in the HTML. */' + (visibilityNotes ? `\n\n/* Visibility Notes:\n${visibilityNotes}\n*/` : '');
+            } else {
+                const cssRules = this.generateCSS(previewClone);
+                const visibilityNotes = this.buildVisibilityNotes(previewClone, 'css');
+                this.cleanupForExport(previewClone);
+                this.applySemanticTransform(previewClone);
+                this.prepareExportSplits(previewClone);
+                const rawHtml = this.extractInnerContent(previewClone);
+                const htmlContent = doMinify ? this.formatHTML(rawHtml,{compact:true}) : this.formatHTML(rawHtml);
+                const finalCSS = doMinify ? this.minifyCSS(cssRules) : cssRules;
+                this.app.querySelector('#html-code').textContent = htmlContent;
+                this.app.querySelector('#css-code').textContent = finalCSS + (visibilityNotes ? `\n/* Visibility Notes:\n${visibilityNotes}\n*/\n` : '');
+            }
+            if (this.codeModalOpen) this.syncModalCode();
+            this.generatedOnce = true;
+        } catch(err){
+            console.error('generateCode failed', err);
+            // Clear generating flag so user can retry
+        } finally {
+            this._generating = false;
+        }
+        }
 
     formatCSS(styles, indent = '  ') {
         let css = '';
@@ -552,8 +718,16 @@ ${this.formatCSS(deviceStyles, '    ')}}
         const panelContent = this.app.querySelector('#properties-panel-content');
         if (!this.selectedElement) {
             panelContent.innerHTML = '<p>Select an element to edit its properties.</p>';
+            this.updateDeviceOverrideIndicators(null);
+            this.updateBreadcrumb(null);
             return;
         }
+
+    const multiMode = this.multiSelected && this.multiSelected.size > 1;
+    const selectionArray = multiMode ? Array.from(this.multiSelected) : [this.selectedElement];
+    const allAreFlexChildren = multiMode ? selectionArray.every(el => !el.classList.contains('row') && !el.classList.contains('grid-container')) : false;
+    const allAreRows = multiMode ? selectionArray.every(el => el.classList.contains('row')) : false;
+    const allAreGridItems = multiMode ? selectionArray.every(el => el.classList.contains('grid-item')) : false;
 
         if (!this.selectedElement.dataset.styles) {
             this.selectedElement.dataset.styles = JSON.stringify({
@@ -563,9 +737,21 @@ ${this.formatCSS(deviceStyles, '    ')}}
             });
         }
 
-        const styles = JSON.parse(this.selectedElement.dataset.styles);
+    const styles = JSON.parse(this.selectedElement.dataset.styles);
         const editDevice = this.propertyEditDevice || 'desktop';
         const currentStyles = styles[editDevice];
+
+        // Helper to compute unified value across selection for a given style property
+        const unifiedValue = (prop) => {
+            if (!multiMode) return currentStyles[prop] || '';
+            let first; let same = true;
+            for (const el of selectionArray) {
+                let s; try { s = JSON.parse(el.dataset.styles || '{}'); } catch { s = { desktop:{}, tablet:{}, mobile:{} }; }
+                const dev = s[editDevice] || {};
+                if (first === undefined) first = dev[prop]; else if (dev[prop] !== first) { same = false; break; }
+            }
+            return same ? (first || '') : '';
+        };
         const isRow = this.selectedElement.classList.contains('row');
     const isGridContainer = this.selectedElement.classList.contains('grid-container');
     const isGridItem = this.selectedElement.classList.contains('grid-item');
@@ -603,8 +789,130 @@ ${this.formatCSS(deviceStyles, '    ')}}
         const visibilityMobileHidden = styles.mobile.display === 'none';
 
     panelContent.setAttribute('data-panel-kind', isRow? 'row' : (isGridContainer? 'grid-container' : (isGridItem? 'grid-item' : 'other')));
+        const userClass = this.selectedElement.getAttribute('data-user-class') || '';
+        const userTag = this.selectedElement.getAttribute('data-user-tag') || 'div';
+        const isLeaf = this.selectedElement.children.length === 0;
+        const leafText = isLeaf ? this.selectedElement.textContent.trim() : '';
+        if (multiMode) {
+            panelContent.innerHTML = `
+            <div class="property"><strong style="font-size:0.75rem;">Multi-Select (${selectionArray.length} elements)</strong><br><small style="color:#666;">Editing applies to all selected. Blank fields with mixed values show as empty.</small></div>
+            <div class="property" style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" id="bulk-duplicate" style="flex:1 1 48%; background:#0d6efd; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;">Duplicate</button>
+                <button type="button" id="bulk-delete" style="flex:1 1 48%; background:#dc3545; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;">Delete</button>
+                <button type="button" id="bulk-wrap-row" style="flex:1 1 48%; background:#6610f2; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;">Wrap in Row</button>
+                <button type="button" id="bulk-wrap-grid" style="flex:1 1 48%; background:#6f42c1; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;">Wrap in Grid</button>
+                <button type="button" id="bulk-copy-styles" style="flex:1 1 48%; background:#198754; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;">Copy Styles</button>
+                <button type="button" id="bulk-paste-styles" style="flex:1 1 48%; background:#20c997; color:#fff; border:none; padding:6px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer;" ${this.copiedStyles? '':'disabled style="opacity:.5;"'}>Paste Styles</button>
+            </div>
+            <div class="property">
+                <label>Width</label>
+                <div class="input-group wrap">
+                    <input type="text" id="width-input" value="${unifiedValue('width')}" placeholder="${unifiedValue('width')?'':'(mixed)'}">
+                    <select id="width-unit">
+                        <option value="px">px</option>
+                        <option value="%">%</option>
+                        <option value="em">em</option>
+                        <option value="rem">rem</option>
+                        <option value="svw">svw</option>
+                        <option value="dvw">dvw</option>
+                        <option value="lvw">lvw</option>
+                        <option value="vw">vw</option>
+                    </select>
+                </div>
+            </div>
+            <div class="property">
+                <label>Height</label>
+                <div class="input-group wrap">
+                    <input type="text" id="height-input" value="${unifiedValue('height')}" placeholder="${unifiedValue('height')?'':'(mixed)'}">
+                    <select id="height-unit">
+                        <option value="px">px</option>
+                        <option value="%">%</option>
+                        <option value="em">em</option>
+                        <option value="rem">rem</option>
+                        <option value="svh">svh</option>
+                        <option value="dvh">dvh</option>
+                        <option value="lvh">lvh</option>
+                        <option value="vh">vh</option>
+                    </select>
+                </div>
+            </div>
+            <div class="property">
+                <label>Spacing</label>
+                <div class="spacing-grid">
+                    <div>
+                        <label>Padding</label>
+                        <select id="padding-select" data-unified="${unifiedValue('padding')}">
+                            <option value="">${unifiedValue('padding')? 'None' : '(mixed)'}</option>
+                            <option value="8px">8px</option>
+                            <option value="16px">16px</option>
+                            <option value="24px">24px</option>
+                            <option value="32px">32px</option>
+                            <option value="1rem">1rem</option>
+                            <option value="2rem">2rem</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Margin</label>
+                        <select id="margin-select" data-unified="${unifiedValue('margin')}">
+                            <option value="">${unifiedValue('margin')? 'None' : '(mixed)'}</option>
+                            <option value="8px">8px</option>
+                            <option value="16px">16px</option>
+                            <option value="24px">24px</option>
+                            <option value="32px">32px</option>
+                            <option value="1rem">1rem</option>
+                            <option value="2rem">2rem</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="adv-spacing-head"><button type="button" id="adv-spacing-toggle" class="adv-toggle" title="Show per-side padding & margin">Advanced per-side</button></div>
+                <div id="adv-spacing-panel" style="display:none; margin-top:6px;">
+                    <div class="adv-group">
+                        <label class="adv-label">Padding (per-side)</label>
+                        <div class="adv-grid">
+                            <input id="pad-top-input" placeholder="Top" value="${unifiedValue('paddingTop')}" />
+                            <input id="pad-right-input" placeholder="Right" value="${unifiedValue('paddingRight')}" />
+                            <input id="pad-bottom-input" placeholder="Bottom" value="${unifiedValue('paddingBottom')}" />
+                            <input id="pad-left-input" placeholder="Left" value="${unifiedValue('paddingLeft')}" />
+                        </div>
+                    </div>
+                    <div class="adv-group" style="margin-top:6px;">
+                        <label class="adv-label">Margin (per-side)</label>
+                        <div class="adv-grid">
+                            <input id="mar-top-input" placeholder="Top" value="${unifiedValue('marginTop')}" />
+                            <input id="mar-right-input" placeholder="Right" value="${unifiedValue('marginRight')}" />
+                            <input id="mar-bottom-input" placeholder="Bottom" value="${unifiedValue('marginBottom')}" />
+                            <input id="mar-left-input" placeholder="Left" value="${unifiedValue('marginLeft')}" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="property">
+                <label>Colors</label>
+                <div class="input-group" style="flex-wrap:wrap;">
+                    <label style="flex:1 1 48%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">BG <input type="color" id="bg-color-input" value="${unifiedValue('backgroundColor') || '#ffffff'}" style="flex:1 1 auto; height:28px;"></label>
+                    <label style="flex:1 1 48%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">Text <input type="color" id="text-color-input" value="${unifiedValue('color') || '#000000'}" style="flex:1 1 auto; height:28px;"></label>
+                </div>
+            </div>
+            ${allAreFlexChildren ? `<div class="property"><label>Flex Grow</label><select id="flex-grow-select"><option value="">Auto</option><option value="0">No grow</option><option value="1">Grow to fill</option></select></div>` : ''}
+            ${allAreFlexChildren ? `<div class="property"><label>Align Self</label><select id="align-self-select"><option value="">Auto</option><option value="flex-start">Start</option><option value="center">Center</option><option value="flex-end">End</option><option value="stretch">Stretch</option></select></div>` : ''}
+            ${allAreRows ? `<div class="property"><label>Flex Gap</label><input type="text" id="flex-gap-input" value="${unifiedValue('gap')}" placeholder="${unifiedValue('gap')?'':'(mixed)'}"></div>`: ''}
+            ${allAreRows ? `<div class="property"><label>Flex Wrap</label><select id="flex-wrap-select"><option value="nowrap">No Wrap</option><option value="wrap">Wrap</option><option value="wrap-reverse">Wrap Reverse</option></select></div>`: ''}
+            `;
+        } else {
     panelContent.innerHTML = `
             ${responsiveStackUI}
+            <div class="property">
+                <label>Semantic & Content <span class="help-icon">?<span class="tooltip-text">Set an optional semantic HTML5 tag and custom export class. Text editing only for leaf elements.</span></span></label>
+                <div class="input-group wrap">
+                    <select id="semantic-tag">${['div','header','main','section','article','aside','footer'].map(t=>`<option value="${t}" ${userTag===t?'selected':''}>${t}</option>`).join('')}</select>
+                    <input type="text" id="semantic-class" placeholder="custom-class" value="${userClass}" style="flex:1 1 auto;" />
+                </div>
+                ${isLeaf ? `<input type="text" id="text-content-input" placeholder="Text content" value="${leafText.replace(/"/g,'&quot;')}" style="margin-top:6px;">` : ''}
+                <div class="input-group" style="margin-top:6px;">
+                    <label style="flex:1 1 50%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">BG <input type="color" id="bg-color-input" value="${currentStyles.backgroundColor || '#ffffff'}" style="flex:1 1 auto; height:28px;"></label>
+                    <label style="flex:1 1 50%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">Text <input type="color" id="text-color-input" value="${currentStyles.color || '#000000'}" style="flex:1 1 auto; height:28px;"></label>
+                </div>
+            </div>
             <div class="property">
                 <label>Width <span class="help-icon">?
                     <span class="tooltip-text">Width units:<br><strong>px</strong>: fixed pixels<br><strong>%</strong>: percent of parent<br><strong>em/rem</strong>: relative (rem = root)<br><strong>vw</strong>: legacy viewport width<br><strong>svw</strong>: small viewport width (stable, iOS safe)<br><strong>lvw</strong>: large viewport width<br><strong>dvw</strong>: dynamic viewport width</span>
@@ -678,6 +986,34 @@ ${this.formatCSS(deviceStyles, '    ')}}
                             <option value="2rem">2rem</option>
                         </select>
                     </div>
+                </div>
+                <div class="adv-spacing-head"><button type="button" id="adv-spacing-toggle" class="adv-toggle" title="Show per-side padding & margin">Advanced per-side</button></div>
+                <div id="adv-spacing-panel" style="display:none; margin-top:6px;">
+                    <div class="adv-group">
+                        <label class="adv-label">Padding (per-side)</label>
+                        <div class="adv-grid">
+                            <input id="pad-top-input" placeholder="Top" value="${unifiedValue('paddingTop')}" />
+                            <input id="pad-right-input" placeholder="Right" value="${unifiedValue('paddingRight')}" />
+                            <input id="pad-bottom-input" placeholder="Bottom" value="${unifiedValue('paddingBottom')}" />
+                            <input id="pad-left-input" placeholder="Left" value="${unifiedValue('paddingLeft')}" />
+                        </div>
+                    </div>
+                    <div class="adv-group" style="margin-top:6px;">
+                        <label class="adv-label">Margin (per-side)</label>
+                        <div class="adv-grid">
+                            <input id="mar-top-input" placeholder="Top" value="${unifiedValue('marginTop')}" />
+                            <input id="mar-right-input" placeholder="Right" value="${unifiedValue('marginRight')}" />
+                            <input id="mar-bottom-input" placeholder="Bottom" value="${unifiedValue('marginBottom')}" />
+                            <input id="mar-left-input" placeholder="Left" value="${unifiedValue('marginLeft')}" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="property">
+                <label>Colors</label>
+                <div class="input-group" style="flex-wrap:wrap;">
+                    <label style="flex:1 1 48%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">BG <input type="color" id="bg-color-input" value="${currentStyles.backgroundColor || '#ffffff'}" style="flex:1 1 auto; height:28px;"></label>
+                    <label style="flex:1 1 48%; font-size:0.65rem; display:flex; gap:4px; align-items:center;">Text <input type="color" id="text-color-input" value="${currentStyles.color || '#000000'}" style="flex:1 1 auto; height:28px;"></label>
                 </div>
             </div>
             <div class="property">
@@ -757,8 +1093,15 @@ ${this.formatCSS(deviceStyles, '    ')}}
                                 <label>Flex Grow <span class="help-icon">?<span class="tooltip-text">Grow=1 lets the element expand to fill extra space; 0 keeps intrinsic width.</span></span></label>
                                 <select id="flex-grow-select"><option value="">Auto</option><option value="0">No grow</option><option value="1">Grow to fill</option></select>
                             </div>
+                            <div class="property">
+                                <label>Align Self <span class="help-icon">?<span class="tooltip-text">Override this element's alignment inside its flex/grid parent.</span></span></label>
+                                <select id="align-self-select"><option value="">Auto</option><option value="flex-start">Start</option><option value="center">Center</option><option value="flex-end">End</option><option value="stretch">Stretch</option></select>
+                            </div>
                         `}
+            ${isRow ? `<div class="property"><label>Flex Gap <span class="help-icon">?<span class="tooltip-text">Space between flex children (modern gap support).</span></span></label><input type="text" id="flex-gap-input" value="${currentStyles.gap||''}" placeholder="e.g. 12px"></div>`:''}
+            ${isRow ? `<div class="property"><label>Flex Wrap <span class="help-icon">?<span class="tooltip-text">Control wrapping of flex children.</span></span></label><select id="flex-wrap-select"><option value="nowrap">No Wrap</option><option value="wrap">Wrap</option><option value="wrap-reverse">Wrap Reverse</option></select></div>`:''}
         `;
+        }
 
         // Setup event listeners
         if (isRow) {
@@ -775,12 +1118,44 @@ ${this.formatCSS(deviceStyles, '    ')}}
             }
         }
         this.setupQuickValues();
-        this.setupPropertyInput('width-input', 'width', styles, editDevice);
-        this.setupPropertyInput('height-input', 'height', styles, editDevice);
-        this.setupPropertyInput('padding-select', 'padding', styles, editDevice, 'select');
-        this.setupPropertyInput('margin-select', 'margin', styles, editDevice, 'select');
+        if (multiMode) {
+            this.setupBulkPropertyInput('width-input', 'width', editDevice);
+            this.setupBulkPropertyInput('height-input', 'height', editDevice);
+            this.setupBulkPropertyInput('padding-select', 'padding', editDevice, 'select');
+            this.setupBulkPropertyInput('margin-select', 'margin', editDevice, 'select');
+        } else {
+            this.setupPropertyInput('width-input', 'width', styles, editDevice);
+            this.setupPropertyInput('height-input', 'height', styles, editDevice);
+            this.setupPropertyInput('padding-select', 'padding', styles, editDevice, 'select');
+            this.setupPropertyInput('margin-select', 'margin', styles, editDevice, 'select');
+        }
+        // Advanced spacing toggle & inputs
+        const advToggle = this.app.querySelector('#adv-spacing-toggle');
+        const advPanel = this.app.querySelector('#adv-spacing-panel');
+        if (advToggle && advPanel) {
+            advToggle.addEventListener('click', () => {
+                const open = advPanel.style.display !== 'none';
+                advPanel.style.display = open ? 'none' : 'block';
+                advToggle.classList.toggle('open', !open);
+            }, { once: true });
+            // One-time init values for per-side
+            ['Top','Right','Bottom','Left'].forEach(side => {
+                const padInput = this.app.querySelector(`#pad-${side.toLowerCase()}-input`);
+                const marInput = this.app.querySelector(`#mar-${side.toLowerCase()}-input`);
+                const stylePadKey = 'padding'+side;
+                const styleMarKey = 'margin'+side;
+                if (padInput) {
+                    padInput.value = currentStyles[stylePadKey] || '';
+                    padInput.addEventListener('input', e => { if (e.target.value) styles[editDevice][stylePadKey] = e.target.value; else delete styles[editDevice][stylePadKey]; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); this.scheduleHistoryCapture('prop:'+stylePadKey); this.scheduleAutoGenerate(); });
+                }
+                if (marInput) {
+                    marInput.value = currentStyles[styleMarKey] || '';
+                    marInput.addEventListener('input', e => { if (e.target.value) styles[editDevice][styleMarKey] = e.target.value; else delete styles[editDevice][styleMarKey]; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); this.scheduleHistoryCapture('prop:'+styleMarKey); this.scheduleAutoGenerate(); });
+                }
+            });
+        }
         
-        if (isRow) {
+    if (!multiMode && isRow) {
             this.setupPropertyInput('flex-direction-select', 'flexDirection', styles, editDevice, 'select');
             this.setupPropertyInput('justify-content-select', 'justifyContent', styles, editDevice, 'select');
             this.setupPropertyInput('align-items-select', 'alignItems', styles, editDevice, 'select');
@@ -792,6 +1167,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                     styles[editDevice].gridTemplateColumns = Array.from({length:n}).map(()=> '1fr').join(' ');
                     this.selectedElement.dataset.styles = JSON.stringify(styles);
                     this.applyStyles();
+                    this.scheduleAutoGenerate();
                 });
             }
             this.app.querySelectorAll('[data-gridcols]').forEach(btn => {
@@ -801,6 +1177,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                     if (colCountInput) colCountInput.value = n;
                     this.selectedElement.dataset.styles = JSON.stringify(styles);
                     this.applyStyles();
+                    this.scheduleAutoGenerate();
                 });
             });
             const gapInput = this.app.querySelector('#grid-gap-input');
@@ -810,20 +1187,20 @@ ${this.formatCSS(deviceStyles, '    ')}}
                 this.selectedElement.dataset.styles = JSON.stringify(styles);
                 this.applyStyles();
             };
-            if (gapInput) gapInput.addEventListener('input', e => updateGap(e.target.value));
+            if (gapInput) gapInput.addEventListener('input', e => { updateGap(e.target.value); this.scheduleAutoGenerate(); });
             if (gapPreset) {
                 gapPreset.value = styles[editDevice].gap || '';
-                gapPreset.addEventListener('change', e => { if (e.target.value) { gapInput.value = e.target.value; updateGap(e.target.value); }});
+                gapPreset.addEventListener('change', e => { if (e.target.value) { gapInput.value = e.target.value; updateGap(e.target.value); this.scheduleAutoGenerate(); }});
             }
             const justifyItemsSel = this.app.querySelector('#justify-items-select');
             if (justifyItemsSel) {
                 justifyItemsSel.value = styles[editDevice].justifyItems || '';
-                justifyItemsSel.addEventListener('change', e => { if (e.target.value) styles[editDevice].justifyItems = e.target.value; else delete styles[editDevice].justifyItems; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); });
+                justifyItemsSel.addEventListener('change', e => { if (e.target.value) styles[editDevice].justifyItems = e.target.value; else delete styles[editDevice].justifyItems; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); this.scheduleAutoGenerate(); });
             }
             const alignItemsGridSel = this.app.querySelector('#align-items-grid-select');
             if (alignItemsGridSel) {
                 alignItemsGridSel.value = styles[editDevice].alignItems || '';
-                alignItemsGridSel.addEventListener('change', e => { if (e.target.value) styles[editDevice].alignItems = e.target.value; else delete styles[editDevice].alignItems; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); });
+                alignItemsGridSel.addEventListener('change', e => { if (e.target.value) styles[editDevice].alignItems = e.target.value; else delete styles[editDevice].alignItems; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); this.scheduleAutoGenerate(); });
             }
             const gridStackToggle = this.app.querySelector('#grid-stack-toggle');
             if (gridStackToggle) gridStackToggle.addEventListener('change', e => { this.selectedElement.dataset.gridStack = e.target.checked ? 'true':'false'; this.applyStyles(); });
@@ -844,7 +1221,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                         delete styles.tablet.gridTemplateColumns;
                     }
                     this.selectedElement.dataset.styles = JSON.stringify(styles);
-                    this.applyStyles();
+                    this.applyStyles(); this.scheduleAutoGenerate();
                 });
             }
             if (mobileColsInput) {
@@ -861,7 +1238,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                         delete styles.mobile.gridTemplateColumns;
                     }
                     this.selectedElement.dataset.styles = JSON.stringify(styles);
-                    this.applyStyles();
+                    this.applyStyles(); this.scheduleAutoGenerate();
                 });
             }
             const addItemBtn = this.app.querySelector('#add-grid-item-btn');
@@ -872,7 +1249,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                 cell.dataset.styles = JSON.stringify({ desktop: {}, tablet: {}, mobile: {} });
                 cell.dataset.responsiveStack = 'false';
                 this.selectedElement.appendChild(cell);
-                this.applyStyles();
+                this.applyStyles(); this.scheduleAutoGenerate();
             });
             const addRowBtn = this.app.querySelector('#add-grid-row-btn');
             if (addRowBtn) addRowBtn.addEventListener('click', () => {
@@ -886,7 +1263,7 @@ ${this.formatCSS(deviceStyles, '    ')}}
                     cell.dataset.responsiveStack = 'false';
                     this.selectedElement.appendChild(cell);
                 }
-                this.applyStyles();
+                this.applyStyles(); this.scheduleAutoGenerate();
             });
         } else if (isGridItem) {
             const colSpanInput = this.app.querySelector('#grid-col-span');
@@ -899,15 +1276,66 @@ ${this.formatCSS(deviceStyles, '    ')}}
                     this.selectedElement.dataset.styles = JSON.stringify(styles);
                     this.applyStyles();
                 };
-                colSpanInput.addEventListener('input', applySpan);
-                rowSpanInput.addEventListener('input', applySpan);
+                colSpanInput.addEventListener('input', ()=>{ applySpan(); this.scheduleAutoGenerate(); });
+                rowSpanInput.addEventListener('input', ()=>{ applySpan(); this.scheduleAutoGenerate(); });
                 if (styles[editDevice].gridColumn) { const m = styles[editDevice].gridColumn.match(/span (\d+)/); if (m) colSpanInput.value = m[1]; }
                 if (styles[editDevice].gridRow) { const m2 = styles[editDevice].gridRow.match(/span (\d+)/); if (m2) rowSpanInput.value = m2[1]; }
                 if (clearBtn) clearBtn.addEventListener('click', () => { delete styles[editDevice].gridColumn; delete styles[editDevice].gridRow; colSpanInput.value=''; rowSpanInput.value=''; this.selectedElement.dataset.styles = JSON.stringify(styles); this.applyStyles(); });
             }
-        } else {
+        } else if (!multiMode) {
             this.setupPropertyInput('flex-grow-select', 'flexGrow', styles, editDevice, 'select');
+            this.setupPropertyInput('align-self-select', 'alignSelf', styles, editDevice, 'select');
         }
+        if (!multiMode && isRow) {
+            this.setupPropertyInput('flex-gap-input', 'gap', styles, editDevice);
+            this.setupPropertyInput('flex-wrap-select', 'flexWrap', styles, editDevice, 'select');
+        }
+        if (multiMode && selectionArray.length) {
+            // Bulk-specific property inputs
+            if (allAreFlexChildren) {
+                this.setupBulkPropertyInput('flex-grow-select', 'flexGrow', editDevice, 'select');
+                this.setupBulkPropertyInput('align-self-select', 'alignSelf', editDevice, 'select');
+            }
+            if (allAreRows) {
+                this.setupBulkPropertyInput('flex-gap-input', 'gap', editDevice);
+                this.setupBulkPropertyInput('flex-wrap-select', 'flexWrap', editDevice, 'select');
+            }
+        }
+
+    // Semantic inputs
+    if (!multiMode) {
+        const tagSel = this.app.querySelector('#semantic-tag');
+    if (tagSel) tagSel.addEventListener('change', e => { this.selectedElement.setAttribute('data-user-tag', e.target.value); this.scheduleHistoryCapture('semantic-tag'); this.scheduleAutoGenerate(); });
+        const classInput = this.app.querySelector('#semantic-class');
+    if (classInput) classInput.addEventListener('input', e => { if (e.target.value.trim()) this.selectedElement.setAttribute('data-user-class', e.target.value.trim()); else this.selectedElement.removeAttribute('data-user-class'); this.scheduleHistoryCapture('semantic-class'); this.scheduleAutoGenerate(); });
+        const textInput = this.app.querySelector('#text-content-input');
+    if (textInput) textInput.addEventListener('input', e => { this.selectedElement.textContent = e.target.value; this.scheduleHistoryCapture('text'); this.scheduleAutoGenerate(); });
+    }
+    const bgInput = this.app.querySelector('#bg-color-input');
+    if (bgInput) bgInput.addEventListener('input', e => { if (multiMode){ this.applyBulkStyle(editDevice,'backgroundColor', e.target.value);} else { styles[editDevice].backgroundColor = e.target.value; this.selectedElement.dataset.styles = JSON.stringify(styles);} this.applyStyles(); this.scheduleHistoryCapture('prop:bg'); this.scheduleAutoGenerate(); });
+    const colorInput = this.app.querySelector('#text-color-input');
+    if (colorInput) colorInput.addEventListener('input', e => { if (multiMode){ this.applyBulkStyle(editDevice,'color', e.target.value);} else { styles[editDevice].color = e.target.value; this.selectedElement.dataset.styles = JSON.stringify(styles);} this.applyStyles(); this.scheduleHistoryCapture('prop:color'); this.scheduleAutoGenerate(); });
+
+    // Bulk action listeners
+    if (multiMode) {
+        const dup = this.app.querySelector('#bulk-duplicate');
+        const del = this.app.querySelector('#bulk-delete');
+        const wrapRow = this.app.querySelector('#bulk-wrap-row');
+        const wrapGrid = this.app.querySelector('#bulk-wrap-grid');
+        const copyBtn = this.app.querySelector('#bulk-copy-styles');
+        const pasteBtn = this.app.querySelector('#bulk-paste-styles');
+        if (dup) dup.addEventListener('click', () => { this.duplicateSelection(); });
+        if (del) del.addEventListener('click', () => { this.deleteSelection(); });
+        if (wrapRow) wrapRow.addEventListener('click', () => { this.wrapSelection('row'); });
+        if (wrapGrid) wrapGrid.addEventListener('click', () => { this.wrapSelection('grid'); });
+        if (copyBtn) copyBtn.addEventListener('click', () => { this.copySelectionStyles(); this.updatePropertiesPanel(); });
+        if (pasteBtn) pasteBtn.addEventListener('click', () => { if (this.copiedStyles) { this.pasteSelectionStyles(); this.applyStyles(); this.captureSnapshot('bulk-paste'); } });
+    }
+
+    // Grid item controls
+    if (isGridItem) this.injectGridItemControls(styles, editDevice);
+    // Batch override clear
+    this.injectBatchClearOverrides(styles);
 
     // Visibility listeners
     this.setupVisibilityCheckbox('hide-desktop', 'desktop', styles);
@@ -915,300 +1343,582 @@ ${this.formatCSS(deviceStyles, '    ')}}
     this.setupVisibilityCheckbox('hide-mobile', 'mobile', styles);
 
         // Set current values
-        this.app.querySelector('#padding-select').value = currentStyles.padding || '';
-        this.app.querySelector('#margin-select').value = currentStyles.margin || '';
-        if (isRow) {
+        if (!multiMode) {
+            this.app.querySelector('#padding-select').value = currentStyles.padding || '';
+            this.app.querySelector('#margin-select').value = currentStyles.margin || '';
+        }
+        if (!multiMode && isRow) {
+            // Append export split toggle if row
+            const rowSplitToggleId = 'row-export-split';
+            if (!this.app.querySelector('#'+rowSplitToggleId)) {
+                const rowPanel = this.app.querySelector('#flex-direction-select')?.closest('.property');
+                if (rowPanel) {
+                    const wrap = document.createElement('div');
+                    wrap.className='property';
+                    wrap.innerHTML = `<label style="display:flex; gap:6px; align-items:center; font-size:0.7rem;"><input type="checkbox" id="${rowSplitToggleId}" ${this.selectedElement.dataset.exportSplit==='true'?'checked':''}> <span>Enable drag resize between children (export)</span></label><small style="color:#666;display:block;margin-top:4px;">Adds lightweight JS in exported HTML for adjustable split widths.</small>`;
+                    rowPanel.parentElement.insertBefore(wrap, rowPanel.nextSibling);
+                    wrap.querySelector('input').addEventListener('change', e=> { this.selectedElement.dataset.exportSplit = e.target.checked ? 'true':'false'; this.scheduleHistoryCapture('row-split-toggle'); });
+                }
+            }
             this.app.querySelector('#flex-direction-select').value = currentStyles.flexDirection || 'row';
             this.app.querySelector('#justify-content-select').value = currentStyles.justifyContent || 'flex-start';
             this.app.querySelector('#align-items-select').value = currentStyles.alignItems || 'stretch';
         } else {
-            this.app.querySelector('#flex-grow-select').value = currentStyles.flexGrow || '';
+            if (!multiMode) this.app.querySelector('#flex-grow-select').value = currentStyles.flexGrow || '';
         }
+        if (!multiMode && currentStyles.alignSelf && this.app.querySelector('#align-self-select')) this.app.querySelector('#align-self-select').value = currentStyles.alignSelf;
+        if (!multiMode && currentStyles.flexWrap && this.app.querySelector('#flex-wrap-select')) this.app.querySelector('#flex-wrap-select').value = currentStyles.flexWrap;
+        if (!multiMode && currentStyles.gap && this.app.querySelector('#flex-gap-input')) this.app.querySelector('#flex-gap-input').value = currentStyles.gap;
 
     // Ensure quick preset buttons reflect current value after panel rebuild
     this.updateQuickButtonStates();
+    this.updateDeviceOverrideIndicators(this.selectedElement);
+    this.markOverrideInputs();
+    this.updateBreadcrumb(this.selectedElement);
+    this.updateContrastBadge();
     }
 
-    fastUpdatePropertyValues(device) {
-        if (!this.selectedElement) return false;
-        const panelContent = this.app.querySelector('#properties-panel-content');
-        if (!panelContent || !panelContent.hasAttribute('data-panel-kind')) return false;
-        // Parse styles
-        let styles;
-        try { styles = JSON.parse(this.selectedElement.dataset.styles || '{}'); } catch(_) { return false; }
-        if (!styles[device]) styles[device] = {};
-        const currentStyles = styles[device];
-        // Generic inputs
-        const widthInput = this.app.querySelector('#width-input');
-        const heightInput = this.app.querySelector('#height-input');
-        if (!widthInput || !heightInput) return false; // panel structure changed; fallback to full rebuild
-        widthInput.value = currentStyles.width || '';
-        heightInput.value = currentStyles.height || '';
-        const padSel = this.app.querySelector('#padding-select'); if (padSel) padSel.value = currentStyles.padding || '';
-        const marSel = this.app.querySelector('#margin-select'); if (marSel) marSel.value = currentStyles.margin || '';
-        // Row specific
-        if (this.selectedElement.classList.contains('row')) {
-            const fd = this.app.querySelector('#flex-direction-select'); if (fd) fd.value = currentStyles.flexDirection || 'row';
-            const jc = this.app.querySelector('#justify-content-select'); if (jc) jc.value = currentStyles.justifyContent || 'flex-start';
-            const ai = this.app.querySelector('#align-items-select'); if (ai) ai.value = currentStyles.alignItems || 'stretch';
-        }
-        // Grid container specific
-        if (this.selectedElement.classList.contains('grid-container')) {
-            const colCountInput = this.app.querySelector('#grid-col-count');
-            if (colCountInput) {
-                const cols = (currentStyles.gridTemplateColumns||'').split(/\s+/).filter(Boolean);
-                if (cols.length) colCountInput.value = cols.length; else if (device==='desktop') colCountInput.value = (styles.desktop.gridTemplateColumns||'1fr 1fr').split(/\s+/).filter(Boolean).length;
-            }
-            const gapInput = this.app.querySelector('#grid-gap-input'); if (gapInput) gapInput.value = currentStyles.gap || styles.desktop.gap || '16px';
-            const justifyItemsSel = this.app.querySelector('#justify-items-select'); if (justifyItemsSel) justifyItemsSel.value = currentStyles.justifyItems || '';
-            const alignItemsGridSel = this.app.querySelector('#align-items-grid-select'); if (alignItemsGridSel) alignItemsGridSel.value = currentStyles.alignItems || '';
-        }
-        // Grid item specific
-        if (this.selectedElement.classList.contains('grid-item')) {
-            const colSpanInput = this.app.querySelector('#grid-col-span');
-            const rowSpanInput = this.app.querySelector('#grid-row-span');
-            if (colSpanInput && rowSpanInput) {
-                if (currentStyles.gridColumn) { const m = currentStyles.gridColumn.match(/span (\d+)/); colSpanInput.value = m? m[1]:''; } else colSpanInput.value='';
-                if (currentStyles.gridRow) { const m2 = currentStyles.gridRow.match(/span (\d+)/); rowSpanInput.value = m2? m2[1]:''; } else rowSpanInput.value='';
-            }
-        }
-        // Flex child
-        if (!this.selectedElement.classList.contains('row') && !this.selectedElement.classList.contains('grid-container') && !this.selectedElement.classList.contains('grid-item')) {
-            const fg = this.app.querySelector('#flex-grow-select'); if (fg) fg.value = currentStyles.flexGrow || '';
-        }
-        // Visibility checkboxes
-        const visDesktop = this.app.querySelector('#hide-desktop'); if (visDesktop) visDesktop.checked = styles.desktop.display === 'none';
-        const visTablet = this.app.querySelector('#hide-tablet'); if (visTablet) visTablet.checked = styles.tablet.display === 'none';
-        const visMobile = this.app.querySelector('#hide-mobile'); if (visMobile) visMobile.checked = styles.mobile.display === 'none';
-        // Quick buttons highlight
-        this.updateQuickButtonStates();
-        return true;
-    }
-
-    setupVisibilityCheckbox(id, deviceKey, styles) {
-        const el = this.app.querySelector(`#${id}`);
-        if (!el) return;
-        el.addEventListener('change', (e) => {
-            const deviceStyles = styles[deviceKey];
-            if (e.target.checked) {
-                deviceStyles.display = 'none';
-            } else if (deviceStyles.display === 'none') {
-                delete deviceStyles.display;
+    setupPropertyInput(inputId, styleProperty, styles, device, inputType = 'input') {
+        const input = this.app.querySelector(`#${inputId}`);
+        if (!input) return;
+        const eventName = inputType === 'select' ? 'change' : 'input';
+        input.addEventListener(eventName, e => {
+            const value = e.target.value;
+            if (value) {
+                styles[device][styleProperty] = value;
+            } else {
+                delete styles[device][styleProperty];
             }
             this.selectedElement.dataset.styles = JSON.stringify(styles);
             this.applyStyles();
+            this.scheduleHistoryCapture(`prop:${styleProperty}`);
+            this.scheduleAutoGenerate();
         });
     }
 
-    buildVisibilityNotes(root, format) {
-        const notes = [];
-        root.querySelectorAll('[data-styles]').forEach((el, idx) => {
-            try {
-                const s = JSON.parse(el.dataset.styles);
-                const hiddenOn = [];
-                ['desktop','tablet','mobile'].forEach(d => { if (s[d] && s[d].display === 'none') hiddenOn.push(d); });
-                if (hiddenOn.length) {
-                    let ref = '';
-                    if (format === 'css') {
-                        const cls = Array.from(el.classList).find(c => /^layout-el-/.test(c));
-                        ref = cls ? `.${cls}` : `Element #${idx+1}`;
-                    } else {
-                        ref = el.className ? el.className.split(/\s+/)[0] : (el.textContent.trim().slice(0,30) || `Element #${idx+1}`);
-                    }
-                    notes.push(`${ref} hidden on: ${hiddenOn.join(', ')}. Toggle via JS: el.style.display = (el.style.display==='none'?'':'none');`);
-                }
-            } catch(_) {}
-        });
-        return notes.join('\n');
-    }
-
-    setupResponsiveToggle(targetRow) {
-        const checkbox = this.app.querySelector('#responsive-stack');
-        if (!checkbox || !targetRow) return;
-        checkbox.addEventListener('change', (e) => {
-            targetRow.dataset.responsiveStack = e.target.checked ? 'true' : 'false';
-            // Do NOT mutate stored mobile styles here; runtime logic will handle layout change
+    setupBulkPropertyInput(inputId, styleProperty, device, inputType = 'input') {
+        const input = this.app.querySelector(`#${inputId}`);
+        if (!input) return;
+        const eventName = inputType === 'select' ? 'change' : 'input';
+        input.addEventListener(eventName, e => {
+            const value = e.target.value;
+            this.applyBulkStyle(device, styleProperty, value);
             this.applyStyles();
+            this.scheduleHistoryCapture(`bulk-prop:${styleProperty}`);
+            this.scheduleAutoGenerate();
+        });
+    }
+
+    applyBulkStyle(device, styleProperty, value) {
+        this.multiSelected.forEach(el => {
+            let styles;
+            try {
+                styles = JSON.parse(el.dataset.styles || '{}');
+            } catch {
+                styles = { desktop: {}, tablet: {}, mobile: {} };
+            }
+            if (!styles[device]) {
+                styles[device] = {};
+            }
+            if (value) {
+                styles[device][styleProperty] = value;
+            } else {
+                delete styles[device][styleProperty];
+            }
+            el.dataset.styles = JSON.stringify(styles);
+        });
+    }
+
+    setupResponsiveToggle(element) {
+        const toggle = this.app.querySelector('#responsive-stack');
+        if (!toggle) return;
+        toggle.addEventListener('change', e => {
+            element.dataset.responsiveStack = e.target.checked ? 'true' : 'false';
+            this.applyStyles();
+            this.scheduleHistoryCapture('responsive-stack');
+            this.scheduleAutoGenerate();
         });
     }
 
     setupQuickValues() {
-        this.app.querySelectorAll('.quick-btn').forEach(btn => {
+        this.app.querySelectorAll('.quick-btn[data-value]').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const propEl = e.target.closest('.property');
-                if (!propEl) return;
-                const input = propEl.querySelector('input');
-                if (!input) return;
-                input.value = e.target.dataset.value;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                this.updateQuickButtonStates();
+                const value = e.target.dataset.value;
+                const propertyDiv = e.target.closest('.property');
+                if (!propertyDiv) return;
+                const input = propertyDiv.querySelector('input[type="text"]');
+                if (input) {
+                    input.value = value;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                }
             });
         });
-    }
-
-    setupPropertyInput(inputId, styleProperty, styles, activeDevice, type = 'text') {
-        const input = this.app.querySelector(`#${inputId}`);
-        input.value = styles[activeDevice][styleProperty] || '';
-    const evt = type === 'select' ? 'change' : 'input';
-    input.addEventListener(evt, (e) => {
-            styles[activeDevice][styleProperty] = e.target.value;
-            this.selectedElement.dataset.styles = JSON.stringify(styles);
-            this.applyStyles();
-            if (styleProperty === 'width' || styleProperty === 'height') {
-                this.updateQuickButtonStates();
-            }
-        });
-    }
-
-    applyStyles() {
-            this.preview.querySelectorAll('div[data-styles]').forEach(el => {
-            const styles = JSON.parse(el.dataset.styles);
-            const desktopStyles = styles.desktop;
-            const tabletStyles = styles.tablet;
-            const mobileStyles = styles.mobile;
-
-            const activeDevice = this.getActiveDevice();
-            const responsiveStack = el.dataset.responsiveStack === 'true';
-
-            let finalStyles = {};
-
-            if (activeDevice === 'desktop') {
-                finalStyles = {...desktopStyles};
-            } else if (activeDevice === 'tablet') {
-                finalStyles = {...desktopStyles, ...tabletStyles};
-                if (responsiveStack && el.classList.contains('row')) {
-                    finalStyles.flexDirection = 'column';
-                }
-            } else {
-                // Mobile view
-                finalStyles = {...desktopStyles, ...tabletStyles, ...mobileStyles};
-                if (responsiveStack && el.classList.contains('row')) {
-                    finalStyles.flexDirection = 'column';
-                }
-            }
-
-            const isRow = el.classList.contains('row');
-            const isGridContainer = el.classList.contains('grid-container');
-            const gridStack = el.dataset.gridStack === 'true';
-
-            // Provide a stable default for row containers when flexDirection absent
-            if (!finalStyles.flexDirection && el.classList.contains('row')) {
-                finalStyles.flexDirection = ((activeDevice === 'tablet' || activeDevice === 'mobile') && responsiveStack) ? 'column' : 'row';
-            }
-            if (isGridContainer) {
-                if (!finalStyles.display) finalStyles.display = 'grid';
-                // Grid stacking: collapse to single column when enabled
-                if (gridStack && (activeDevice === 'tablet' || activeDevice === 'mobile')) {
-                    // Only force if no explicit template override for that device
-                    const explicitTemplate = (activeDevice === 'tablet' && tabletStyles.gridTemplateColumns) || (activeDevice === 'mobile' && mobileStyles.gridTemplateColumns);
-                    if (!explicitTemplate) {
-                        finalStyles.gridTemplateColumns = '1fr';
-                    }
-                }
-            }
-
-            // Clear existing inline styles
-            el.style.cssText = '';
-
-            Object.keys(finalStyles).forEach(key => {
-                el.style[key] = finalStyles[key];
-            });
-        });
-    this.scheduleAutoGenerate();
     }
 
     updateQuickButtonStates() {
-        // For each quick-values group, mark the button whose data-value matches input's value
-        this.app.querySelectorAll('.property').forEach(prop => {
-            const quick = prop.querySelector('.quick-values');
-            if (!quick) return;
-            const input = prop.querySelector('input');
+        this.app.querySelectorAll('.property').forEach(propDiv => {
+            const input = propDiv.querySelector('input[type="text"]');
             if (!input) return;
-            const current = input.value.trim();
-            quick.querySelectorAll('.quick-btn').forEach(btn => {
-                if (btn.dataset.value === current) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
+            const currentValue = input.value;
+            propDiv.querySelectorAll('.quick-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.value === currentValue);
             });
         });
     }
 
-    getActiveDevice() {
-        return this.currentDevice || 'desktop';
+    injectBatchClearOverrides(styles) {
+        // Placeholder for now
     }
 
-    setActivePropertyDevice(device) {
-        if (this.propertyEditDevice === device) return;
-        this.propertyEditDevice = device;
-        // Try fast path update; fallback to full rebuild if it fails
-        if (!this.fastUpdatePropertyValues(device)) {
-            // Defer rebuild to next frame for snappier tab highlight
-            requestAnimationFrame(()=> this.updatePropertiesPanel());
-        }
+    injectGridItemControls(styles, editDevice) {
+        // Placeholder for now
     }
 
-    clearCanvas() {
-        this.preview.innerHTML = '';
-        this.selectedElement = null;
-        this.updatePropertiesPanel();
-    this.scheduleAutoGenerate();
-    }
-
-    loadPreset(preset) {
-        this.clearCanvas();
-        if (preset === 'header-content-footer') {
-            this.preview.innerHTML = `
-                <div class="row" data-styles='{"desktop":{"height":"100px","flexShrink":"0"},"tablet":{},"mobile":{}}' data-responsive-stack="false">Header</div>
-                <div class="row" data-styles='{"desktop":{"flexGrow":"1"},"tablet":{},"mobile":{}}' data-responsive-stack="false">Content</div>
-                <div class="row" data-styles='{"desktop":{"height":"100px","flexShrink":"0"},"tablet":{},"mobile":{}}' data-responsive-stack="false">Footer</div>`;
-            this.preview.style.display = 'flex';
-            this.preview.style.flexDirection = 'column';
-            this.preview.style.height = '100%';
-        } else if (preset === 'sidebar-layout') {
-            this.preview.innerHTML = `
-                <div class="row" data-styles='{"desktop":{"display":"flex","flexDirection":"row","flexGrow":"1"},"tablet":{},"mobile":{}}' data-responsive-stack="true">
-                    <div class="col" data-styles='{"desktop":{"width":"200px","flexShrink":"0"},"tablet":{},"mobile":{}}' data-responsive-stack="false">Sidebar</div>
-                    <div class="col" data-styles='{"desktop":{"flexGrow":"1"},"tablet":{},"mobile":{}}' data-responsive-stack="false">Main Content</div>
-                </div>`;
-            this.preview.style.display = '';
-            this.preview.style.flexDirection = '';
-            this.preview.style.height = '100%';
-        } else if (preset === 'grid-2col-hero') {
-            this.preview.innerHTML = `
-                <div class="grid-container" data-styles='{"desktop":{"display":"grid","gridTemplateColumns":"1fr 1fr","gap":"24px"},"tablet":{},"mobile":{}}' data-responsive-stack="false">
-                    <div class="grid-item" data-styles='{"desktop":{},"tablet":{},"mobile":{}}' data-responsive-stack="false">Left Panel</div>
-                    <div class="grid-item" data-styles='{"desktop":{},"tablet":{},"mobile":{}}' data-responsive-stack="false">Right Panel</div>
-                </div>`;
-            this.preview.style.height = '100%';
-        }
-        this.applyStyles();
-        this.scheduleAutoGenerate(true);
-    }
-
-    scheduleAutoGenerate(force = false) {
+    installPreferenceBindings() {
         const auto = this.app.querySelector('#auto-update-code');
-        if (!auto || !auto.checked) return;
-        if (force) {
-            cancelAnimationFrame(this._autoGenRaf || 0);
-            clearTimeout(this._autoGenTimer);
-            this._autoGenTimer = setTimeout(() => this.generateCode(), 10);
-            return;
-        }
-        // Debounce with micro idle window
-        this._pendingAutoGen = true;
-        cancelAnimationFrame(this._autoGenRaf || 0);
-        this._autoGenRaf = requestAnimationFrame(() => {
-            clearTimeout(this._autoGenTimer);
-            this._autoGenTimer = setTimeout(() => {
-                if (this._pendingAutoGen) {
-                    this._pendingAutoGen = false;
-                    this.generateCode();
+        const prune = this.app.querySelector('#prune-overrides-export');
+        const formatSel = this.app.querySelector('#code-format-select');
+        const minify = this.app.querySelector('#minify-export');
+    if (auto) auto.addEventListener('change', ()=> { this.prefs.autoUpdate = !!auto.checked; this.savePreferences(); if (this.prefs.autoUpdate) this.scheduleAutoGenerate(true); });
+    if (prune) prune.addEventListener('change', ()=> { this.prefs.prune = !!prune.checked; this.savePreferences(); this.scheduleAutoGenerate(true); });
+    if (formatSel) formatSel.addEventListener('change', ()=> { this.prefs.codeFormat = formatSel.value; this.savePreferences(); this.scheduleAutoGenerate(true); });
+        if (minify) minify.addEventListener('change', ()=> { this.prefs.minify = !!minify.checked; this.savePreferences(); this.scheduleAutoGenerate(true); });
+    }
+    loadPreferences() { try { const json = localStorage.getItem('cssLayout:prefs'); if (!json) return; const p = JSON.parse(json); Object.assign(this.prefs, p||{}); } catch(_) {} }
+    savePreferences() { try { localStorage.setItem('cssLayout:prefs', JSON.stringify(this.prefs)); } catch(_){} }
+    applyPreferencesToUI() {
+        const auto = this.app.querySelector('#auto-update-code'); if (auto) auto.checked = this.prefs.autoUpdate;
+        const prune = this.app.querySelector('#prune-overrides-export'); if (prune) prune.checked = this.prefs.prune;
+        const formatSel = this.app.querySelector('#code-format-select'); if (formatSel) formatSel.value = this.prefs.codeFormat;
+        const minify = this.app.querySelector('#minify-export'); if (minify) minify.checked = this.prefs.minify;
+    }
+    // --- Reconstructed / Restored Methods (minimal viable implementations) ---
+    setActivePropertyDevice(dev){
+        this.propertyEditDevice = dev;
+        this.prefs.editDevice = dev; this.savePreferences();
+        this.updatePropertiesPanel();
+    }
+    scheduleAutoGenerate(force=false){
+        if (!this.prefs.autoUpdate && !force) return;
+        clearTimeout(this._autoTimer);
+        this._autoTimer = setTimeout(()=> this.generateCode(), 120);
+    }
+    applyStyles(){
+        const device = this.currentDevice;
+
+        const applyTo = (el)=>{
+            if (!el.dataset.styles) return;
+            let styles; try { styles = JSON.parse(el.dataset.styles); } catch { styles = {desktop:{},tablet:{},mobile:{}}; }
+            
+
+
+            // Support explicit __hidden flag inside styles object (legacy or fallback mechanism)
+            const stylesHidden = (device==='desktop' ? (styles.desktop && styles.desktop.__hidden) : (styles[device] && styles[device].__hidden));
+            if (stylesHidden) {
+                el.style.display='none';
+                return;
+            }
+            // New: dataset-based visibility flags (data-hide-desktop/tablet/mobile) take precedence
+            if ((device==='desktop' && el.dataset.hideDesktop==='true') ||
+                (device==='tablet' && el.dataset.hideTablet==='true') ||
+                (device==='mobile' && el.dataset.hideMobile==='true')) {
+                el.style.display='none';
+                return;
+            }
+            const base = {...(styles.desktop||{})};
+            const over = device==='desktop'? {} : (styles[device]||{});
+            // Legacy support: if a previous version stored display:none in styles for this device, migrate to dataset flag one-time
+            const legacyDisplay = device==='desktop'? base.display : over.display;
+            if (legacyDisplay === 'none') {
+                const flagName = 'hide'+device.charAt(0).toUpperCase()+device.slice(1);
+                el.dataset[flagName] = 'true';
+                // Attempt to restore original display if known
+                if (device==='desktop') {
+                    if (el.classList.contains('row')) base.display='flex';
+                    else if (el.classList.contains('grid-container')) base.display='grid';
+                    else if (el.children.length>0) base.display='flex';
+                    else delete base.display;
+                    delete styles.desktop.display;
+                } else {
+                    delete styles[device].display;
                 }
-            }, 120);
+                el.dataset.styles = JSON.stringify(styles);
+                el.style.display='none';
+                return;
+            }
+            if (el.classList.contains('row')) {
+                const stack = el.dataset.responsiveStack === 'true';
+                if (stack && (device==='tablet' || device==='mobile') && !('flexDirection' in over)) {
+                    base.flexDirection = 'column';
+                }
+            }
+            if (el.classList.contains('grid-container')) {
+                const gstack = el.dataset.gridStack === 'true';
+                if (gstack && (device==='tablet' || device==='mobile') && !('gridTemplateColumns' in over)) {
+                    base.gridTemplateColumns = '1fr';
+                }
+            }
+            const merged = {...base, ...over};
+            // Visibility (display none)
+            ['display','flexDirection','justifyContent','alignItems','gap','flexWrap','width','height','padding','margin','backgroundColor','color','gridTemplateColumns','justifyItems','alignSelf','gridColumn','gridRow'].forEach(k=>{
+                if (merged[k] !== undefined) el.style[k] = merged[k]; else el.style.removeProperty(k.replace(/([A-Z])/g,'-$1').toLowerCase());
+            });
+
+        };
+        this.preview.querySelectorAll('*').forEach(applyTo);
+        this.installResizeHandles();
+    }
+
+    setupVisibilityCheckbox(id, device, styles){
+        const cb = this.app.querySelector('#'+id);
+        if(!cb) return;
+        // Consider both dataset flag and legacy display:none setting
+        const legacyHidden = styles[device] && styles[device].display === 'none';
+        const flagName = 'hide'+device.charAt(0).toUpperCase()+device.slice(1);
+        const datasetHidden = this.selectedElement?.dataset?.[flagName] === 'true';
+        cb.checked = datasetHidden || legacyHidden;
+        
+        // Detach any old listener to prevent memory leaks
+        const newCb = cb.cloneNode(true);
+        cb.parentNode.replaceChild(newCb, cb);
+
+        newCb.addEventListener('change', e=> {
+            // Use a fresh reference to the selected element inside the handler
+            const currentSelectedElement = this.selectedElement;
+            if (!currentSelectedElement) {
+                return;
+            }
+
+            let currentStyles;
+            try {
+                currentStyles = JSON.parse(currentSelectedElement.dataset.styles || '{}');
+            } catch {
+                currentStyles = { desktop: {}, tablet: {}, mobile: {} };
+            }
+
+            const elId = currentSelectedElement.getAttribute('data-user-class') || currentSelectedElement.className.split(' ')[0] || currentSelectedElement.tagName;
+            
+            if(!currentStyles[device]) currentStyles[device] = {};
+
+            if (e.target.checked) {
+                currentSelectedElement.dataset[flagName] = 'true';
+                currentStyles[device].__hidden = true; // store semantic hidden marker
+            } else {
+                delete currentSelectedElement.dataset[flagName];
+                if (currentStyles[device].__hidden) delete currentStyles[device].__hidden;
+            }
+            
+            // Remove any lingering legacy display:none in styles for this device (we rely solely on dataset flags now)
+            if (currentStyles[device].display === 'none') delete currentStyles[device].display;
+            currentSelectedElement.dataset.styles = JSON.stringify(currentStyles); // persist potential cleanup
+            this.applyStyles();
+            this.scheduleAutoGenerate();
         });
     }
+
+    installResizeHandles(){
+        // Remove old handles
+        this.preview.querySelectorAll('.resize-handle').forEach(h=>h.remove());
+        // For each row with >=2 direct flex children (cols or other blocks)
+        this.preview.querySelectorAll('.row').forEach(row=>{
+            const children = Array.from(row.children).filter(ch=>!ch.classList.contains('resize-handle'));
+            if (children.length < 2) return;
+            for (let i=0;i<children.length-1;i++){
+                const handle = document.createElement('div');
+                handle.className='resize-handle';
+                // Insert handle after child i
+                children[i].after(handle);
+                this.bindResizeHandle(handle, children[i], children[i+1]);
+            }
+        });
+    }
+    bindResizeHandle(handle, leftEl, rightEl){
+        let startX, leftStartW, rightStartW, total;
+        const getPercent = (px, parentW)=> ((px/parentW)*100).toFixed(2)+'%';
+        const onDown = (e)=>{
+            e.preventDefault();
+            startX = e.clientX;
+            const parent = leftEl.parentElement;
+            const rectParent = parent.getBoundingClientRect();
+            const rectL = leftEl.getBoundingClientRect();
+            const rectR = rightEl.getBoundingClientRect();
+            leftStartW = rectL.width; rightStartW = rectR.width; total = rectL.width + rectR.width;
+            handle.classList.add('dragging');
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+        const onMove = (e)=>{
+            const dx = e.clientX - startX;
+            let newLeft = leftStartW + dx; let newRight = rightStartW - dx;
+            if (newLeft < 40 || newRight < 40) return; // minimal width
+            const parent = leftEl.parentElement;
+            const parentW = parent.getBoundingClientRect().width;
+            const leftPct = getPercent(newLeft, parentW);
+            const rightPct = getPercent(newRight, parentW);
+            this.setElementWidthPercent(leftEl, leftPct);
+            this.setElementWidthPercent(rightEl, rightPct);
+            this.applyStyles();
+        };
+        const onUp = ()=>{
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            handle.classList.remove('dragging');
+            this.captureSnapshot('resize-cols');
+        };
+        handle.addEventListener('mousedown', onDown);
+    }
+    setElementWidthPercent(el, pct){
+        let styles; try { styles = JSON.parse(el.dataset.styles||'{}'); } catch { styles = {desktop:{},tablet:{},mobile:{}}; }
+        styles.desktop = styles.desktop || {}; // width adjustments are desktop baseline
+        styles.desktop.width = pct;
+        el.dataset.styles = JSON.stringify(styles);
+    }
+    duplicateSelection(){
+        const clones = [];
+        this.multiSelected.forEach(el=>{
+            const clone = el.cloneNode(true);
+            el.parentElement.insertBefore(clone, el.nextSibling);
+            clones.push(clone);
+        });
+        this.applyStyles();
+        this.captureSnapshot('duplicate');
+    }
+    deleteSelection(){
+        this.multiSelected.forEach(el=> el.remove());
+        this.multiSelected.clear();
+        this.selectedElement = null;
+        this.updatePropertiesPanel();
+        this.captureSnapshot('delete');
+    }
+    wrapSelection(kind){
+        if (!this.multiSelected.size) return;
+        const first = Array.from(this.multiSelected)[0];
+        const container = document.createElement('div');
+        if (kind==='row') { container.classList.add('row'); container.dataset.styles = JSON.stringify({desktop:{display:'flex', flexDirection:'row'}, tablet:{}, mobile:{}}); }
+        else { container.classList.add('grid-container'); container.dataset.styles = JSON.stringify({desktop:{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px'}, tablet:{}, mobile:{}}); }
+        container.dataset.responsiveStack = 'false';
+        first.parentElement.insertBefore(container, first);
+        Array.from(this.multiSelected).forEach(el=> container.appendChild(el));
+        this.multiSelected.clear();
+        container.classList.add('selected');
+        this.selectedElement = container;
+        this.updatePropertiesPanel();
+        this.applyStyles();
+        this.captureSnapshot('wrap:'+kind);
+    }
+    copySelectionStyles(){
+        if (!this.multiSelected.size) return;
+        this.copiedStyles = Array.from(this.multiSelected).map(el=> el.dataset.styles || '{}');
+    }
+    pasteSelectionStyles(){
+        if (!this.copiedStyles) return;
+        const src = this.copiedStyles[0];
+        this.multiSelected.forEach(el=> el.dataset.styles = src);
+        this.applyStyles();
+        this.captureSnapshot('paste-styles');
+    }
+    handleKeyShortcuts(e){
+        if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='d'){ if (this.multiSelected.size) { e.preventDefault(); this.duplicateSelection(); } }
+        if (e.key==='Delete' || e.key==='Backspace'){ if (this.multiSelected.size){ e.preventDefault(); this.deleteSelection(); } }
+        if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='z'){ e.preventDefault(); this.undo(); }
+        if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='y'){ e.preventDefault(); this.redo(); }
+    }
+    serializeLayout(){ return this.preview.innerHTML; }
+    restoreLayout(html){ this.preview.innerHTML = html; this.applyStyles(); }
+    autoRestoreFromLocal(){ try { const html = localStorage.getItem('cssLayout:last'); if (html) { this.restoreLayout(html); } } catch(_){} }
+    downloadLayout(){ const data = { html: this.serializeLayout() }; const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='layout.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 500); }
+    handleFileLoad(e){ const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(reader.result); if (data.html) this.restoreLayout(data.html); } catch(_){} }; reader.readAsText(file); }
+    clearCanvas(){ this.preview.innerHTML=''; this.multiSelected.clear(); this.selectedElement=null; this.updatePropertiesPanel(); this.captureSnapshot('clear'); }
+    captureSnapshot(label='change'){
+        const snap = this.serializeLayout();
+        this.undoStack.push({html:snap,label});
+        if (this.undoStack.length>this.maxHistory) this.undoStack.shift();
+        this.redoStack.length = 0;
+        try { localStorage.setItem('cssLayout:last', snap); } catch(_){}
+        this.updateHistoryButtons();
+    }
+    scheduleHistoryCapture(label){
+        this._pendingHistoryLabel = label;
+        clearTimeout(this._historyDebounce);
+        this._historyDebounce = setTimeout(()=> this.captureSnapshot(this._pendingHistoryLabel), 400);
+    }
+    undo(){ if (this.undoStack.length<=1) return; const current = this.undoStack.pop(); this.redoStack.push(current); const last = this.undoStack[this.undoStack.length-1]; this.restoreLayout(last.html); this.updateHistoryButtons(); }
+    redo(){ if (!this.redoStack.length) return; const snap = this.redoStack.pop(); this.undoStack.push(snap); this.restoreLayout(snap.html); this.updateHistoryButtons(); }
+    updateHistoryButtons(){ const u=this.app.querySelector('#undo-btn'); const r=this.app.querySelector('#redo-btn'); if (u) u.disabled = this.undoStack.length<=1; if (r) r.disabled = !this.redoStack.length; }
+    pruneRedundantDeviceStyles(){ /* placeholder no-op for simplified restoration */ }
+    updateDeviceOverrideIndicators(){ /* placeholder */ }
+    markOverrideInputs(){ /* placeholder */ }
+    buildVisibilityNotes(){ return ''; }
+    // --- End reconstructed methods ---
+    minifyCSS(css){
+        return css
+            .replace(/\/\*[\s\S]*?\*\//g,'') // remove comments
+            .replace(/\s+/g,' ') // collapse whitespace
+            .replace(/\s*{\s*/g,'{')
+            .replace(/\s*}\s*/g,'}')
+            .replace(/;\s+/g,';')
+            .replace(/:\s+/g,':')
+            .trim();
+    }
+    prepareExportSplits(root){
+    const splitRows = Array.from(root.querySelectorAll('[data-export-split="true"]'));
+    const splitCols = Array.from(root.querySelectorAll('[data-export-vsplit="true"]'));
+    if (!splitRows.length && !splitCols.length) return;
+    splitRows.forEach(r=>{ r.classList.add('split-row'); r.removeAttribute('data-export-split'); });
+    splitCols.forEach(c=>{ c.classList.add('split-col'); c.removeAttribute('data-export-vsplit'); });
+    if (root.querySelector('[data-split-script]')) return;
+    const remember = this.app.querySelector('#remember-splits')?.checked ? 'true':'false';
+    const tpl = document.createElement('template');
+    tpl.innerHTML = `\n<style>.split-row{display:flex;}.split-row>.split-handle{flex:0 0 6px;cursor:col-resize;background:rgba(0,0,0,0.1);position:relative;border-radius:3px;}.split-row>.split-handle:before{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:60%;background:rgba(0,0,0,0.35);border-radius:1px;}.split-row>.split-handle:hover{background:rgba(0,0,0,0.25);} .split-col{display:flex;flex-direction:column;}.split-col>.split-handle-v{height:6px;cursor:row-resize;background:rgba(0,0,0,0.1);position:relative;border-radius:3px;}.split-col>.split-handle-v:before{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);height:2px;width:60%;background:rgba(0,0,0,0.35);border-radius:1px;}.split-col>.split-handle-v:hover{background:rgba(0,0,0,0.25);} </style>\n<script data-split-script>(function(){const REMEMBER=${remember};const KEY='layout-splits';let store={};try{store=JSON.parse(localStorage.getItem(KEY)||'{}');}catch{}})();<\/script>`;
+    root.appendChild(tpl.content);
+    }
+    loadPreset(name){
+        if (!name) return;
+        this.clearCanvas();
+        const add = (type)=>{ this.addElement(type); return this.preview.lastElementChild; };
+        const make = (cls, baseStyles)=>{ const el=document.createElement('div'); el.classList.add(cls); el.dataset.styles=JSON.stringify(baseStyles); el.dataset.responsiveStack='false'; return el; };
+        const baseFlex = (dir='row')=>({desktop:{display:'flex',flexDirection:dir,flexGrow:'1',gap:'16px'},tablet:{},mobile:{}});
+        const baseGrid = (cols='1fr 1fr')=>({desktop:{display:'grid',gridTemplateColumns:cols,gap:'16px'},tablet:{},mobile:{}});
+        switch(name){
+            case 'header-content-footer': {
+                const header = make('row', baseFlex('row')); header.setAttribute('data-user-tag','header'); header.textContent='Header'; this.preview.appendChild(header);
+                const main = make('row', baseFlex('row')); main.setAttribute('data-user-tag','main'); main.textContent='Main Content'; this.preview.appendChild(main);
+                const footer = make('row', baseFlex('row')); footer.setAttribute('data-user-tag','footer'); footer.textContent='Footer'; this.preview.appendChild(footer);
+                break; }
+            case 'sidebar-layout': {
+                const shell = make('row', baseFlex('row')); shell.style.minHeight='400px'; this.preview.appendChild(shell);
+                const side = make('col', baseFlex('column')); side.style.width='240px'; side.textContent='Sidebar'; shell.appendChild(side);
+                const content = make('col', baseFlex('column')); content.textContent='Content Area'; shell.appendChild(content);
+                break; }
+            case 'sidebar-right-layout': {
+                const shell = make('row', baseFlex('row')); this.preview.appendChild(shell);
+                const content = make('col', baseFlex('column')); content.textContent='Content Area'; shell.appendChild(content);
+                const side = make('col', baseFlex('column')); side.style.width='240px'; side.textContent='Right Sidebar'; shell.appendChild(side);
+                break; }
+            case 'dashboard-app-shell': {
+                const root = make('col', baseFlex('column')); this.preview.appendChild(root);
+                const header = make('row', baseFlex('row')); header.textContent='App Header'; root.appendChild(header);
+                const body = make('row', baseFlex('row')); body.style.flexGrow='1'; root.appendChild(body);
+                const nav = make('col', baseFlex('column')); nav.style.width='220px'; nav.textContent='Nav'; body.appendChild(nav);
+                const main = make('col', baseFlex('column')); main.textContent='Main Workspace'; body.appendChild(main);
+                const status = make('row', baseFlex('row')); status.textContent='Status Bar'; app.appendChild(status);
+                break; }
+            case 'grid-2col-hero': {
+                const hero = make('grid-container', baseGrid('1fr 1fr')); this.preview.appendChild(hero);
+                for (let i=0;i<2;i++){ const cell=document.createElement('div'); cell.classList.add('grid-item'); cell.dataset.styles=JSON.stringify({desktop:{},tablet:{},mobile:{}}); cell.textContent = i===0? 'Hero Text' : 'Image'; hero.appendChild(cell);} break; }
+            case 'grid-gallery': {
+                const gal = make('grid-container', baseGrid('1fr 1fr 1fr')); this.preview.appendChild(gal);
+                for (let i=0;i<6;i++){ const cell=document.createElement('div'); cell.classList.add('grid-item'); cell.dataset.styles=JSON.stringify({desktop:{},tablet:{},mobile:{}}); cell.textContent='Item '+(i+1); gal.appendChild(cell);} break; }
+            case 'form-page': {
+                const shell = make('row', baseFlex('row')); this.preview.appendChild(shell);
+                const main = make('col', baseFlex('column')); main.style.flexGrow='1'; shell.appendChild(main);
+                const aside = make('col', baseFlex('column')); aside.style.width='280px'; aside.textContent='Help / Tips'; shell.appendChild(aside);
+                const title = make('row', baseFlex('row')); title.textContent='Page Title'; main.appendChild(title);
+                const form = make('col', baseFlex('column')); form.textContent='Form Fields'; main.appendChild(form);
+                break; }
+            case 'win-classic': {
+                const app = make('col', baseFlex('column')); this.preview.appendChild(app);
+                const menu = make('row', baseFlex('row')); menu.textContent='Menu Bar'; app.appendChild(menu);
+                const body = make('row', baseFlex('row')); body.style.flexGrow='1'; app.appendChild(body);
+                const side = make('col', baseFlex('column')); side.style.width='200px'; side.textContent='Tree / Nav'; body.appendChild(side);
+                const workspace = make('col', baseFlex('column')); workspace.textContent='Document Workspace'; body.appendChild(workspace);
+                const status = make('row', baseFlex('row')); status.textContent='Status Bar'; app.appendChild(status);
+                break; }
+            case 'blog-post': {
+                const layout = make('row', baseFlex('row')); this.preview.appendChild(layout);
+                const main = make('col', baseFlex('column')); main.style.flexGrow='1'; layout.appendChild(main);
+                const aside = make('col', baseFlex('column')); aside.style.width='260px'; aside.textContent='Sidebar'; layout.appendChild(aside);
+                const title = make('row', baseFlex('row')); title.textContent='Post Title'; main.appendChild(title);
+                const meta = make('row', baseFlex('row')); meta.textContent='Meta Info'; main.appendChild(meta);
+                const body = make('col', baseFlex('column')); body.textContent='Article Body'; main.appendChild(body);
+                break; }
+            default: break;
+        }
+        this.applyStyles();
+        this.captureSnapshot('preset:'+name);
+        this.showBeginnerTipsOnce();
+    }
+    showBeginnerTipsOnce(){
+        if (this._tipsShown) return; this._tipsShown = true;
+        const box = document.createElement('div');
+        box.style.cssText='position:fixed;right:12px;bottom:12px;background:#111;color:#fff;padding:12px 14px;border-radius:6px;font-size:12px;max-width:280px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,.25);z-index:9999;';
+        box.innerHTML = `<strong>Next steps</strong><br>1. Select boxes to edit properties.<br>2. Use Responsive tabs (D/T/M) to tweak per device.<br>3. Fill real text in leaf elements.<br>4. Export code (choose CSS or Tailwind).<br><br><em>Tip:</em> Turn on Minify for production.`;
+        const close = document.createElement('button'); close.textContent='×'; close.style.cssText='position:absolute;top:2px;right:6px;background:none;border:none;color:#fff;font-size:14px;cursor:pointer;'; close.addEventListener('click',()=>box.remove()); box.appendChild(close);
+        document.body.appendChild(box);
+        setTimeout(()=>{ if (box.parentNode) box.remove(); }, 15000);
+    }
+    // ===== New: Breadcrumb =====
+    updateBreadcrumb(el){
+        const bc = this.app.querySelector('#breadcrumb'); if(!bc) return;
+        if(!el){ bc.innerHTML=''; return; }
+        const parts=[]; let cur=el; while(cur && cur!==this.preview){ parts.push(cur); cur=cur.parentElement; }
+        parts.reverse();
+        bc.innerHTML = parts.map((p,i)=>`<button data-bc-idx="${i}" class="crumb">${p.getAttribute('data-user-class')||p.getAttribute('data-user-tag')||p.className.split(' ')[0]||'div'}</button>`).join('<span class="crumb-sep">/</span>');
+        bc.querySelectorAll('button[data-bc-idx]').forEach(btn=> btn.addEventListener('click', ()=> {
+            const idx = parseInt(btn.getAttribute('data-bc-idx'),10);
+            const target = parts[idx];
+            if(this.selectedElement) this.selectedElement.classList.remove('selected');
+            this.selectedElement = target; target.classList.add('selected');
+            this.multiSelected.clear();
+            this.updatePropertiesPanel();
+        }));
+    }
+    // ===== New: Color Contrast Badge =====
+    parseColor(c){ if(!c) return null; const ctx=document.createElement('canvas').getContext('2d'); ctx.fillStyle=c; const v=ctx.fillStyle; // standardized
+        if(/^#/.test(v)){ let hex=v.slice(1); if(hex.length===3) hex=hex.split('').map(h=>h+h).join(''); const num=parseInt(hex,16); return {r:(num>>16)&255,g:(num>>8)&255,b:num&255}; }
+        const m=v.match(/rgba?\((\d+),(\d+),(\d+)/); if(m) return {r:+m[1],g:+m[2],b:+m[3]}; return null; }
+    relLum({r,g,b}){ const sr=[r,g,b].map(v=>{ v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);}); return 0.2126*sr[0]+0.7152*sr[1]+0.0722*sr[2]; }
+    contrastRatio(c1,c2){ if(!c1||!c2) return 0; const L1=this.relLum(c1)+0.05; const L2=this.relLum(c2)+0.05; return L1>L2? (L1/L2):(L2/L1); }
+    updateContrastBadge(){
+        const badgeId='contrast-badge';
+        const existing = this.app.querySelector('#'+badgeId);
+        const panel = this.app.querySelector('#properties-panel-content'); if(!panel) return;
+        if(!this.selectedElement || this.multiSelected.size>1){ if(existing) existing.remove(); return; }
+        let styles; try { styles=JSON.parse(this.selectedElement.dataset.styles||'{}'); } catch { styles={desktop:{},tablet:{},mobile:{}}; }
+        const dev=this.propertyEditDevice||'desktop';
+        const bg=styles[dev].backgroundColor || styles.desktop.backgroundColor || '#ffffff';
+        const fg=styles[dev].color || styles.desktop.color || '#000000';
+        const c1=this.parseColor(bg), c2=this.parseColor(fg); const ratio=this.contrastRatio(c1,c2);
+        const passAA = ratio>=4.5; const passAAA = ratio>=7;
+        const text = `Contrast ${ratio?ratio.toFixed(2):'–'} ${passAAA? '(AAA)': (passAA? '(AA)':'(Fail)')}`;
+        if(existing){ existing.textContent=text; existing.className='contrast-badge '+(passAA?'pass':'fail'); return; }
+        const badge=document.createElement('div'); badge.id=badgeId; badge.className='contrast-badge '+(passAA?'pass':'fail'); badge.textContent=text; panel.prepend(badge);
+    }
+    // ===== New: Validation =====
+    runValidation(){
+        const issues=this.computeValidationIssues();
+        const container=this.app.querySelector('#validation-results'); if(!container) return;
+        if(!issues.length){ container.innerHTML='<div class="ok">No issues detected.</div>'; return; }
+        const listHtml = issues.map((iss,i)=>`<div class="issue" data-code="${iss.code}"><span>${iss.message}</span>${iss.fix?`<button data-fix="${i}">Fix</button>`:''}</div>`).join('');
+        const anyFixable = issues.some(i=>!!i.fix);
+        container.innerHTML = listHtml + (anyFixable?`<div class="val-actions"><button id="fix-all-btn">Fix All</button></div>`:'');
+        container.querySelectorAll('button[data-fix]').forEach(btn=> btn.addEventListener('click',()=>{ const idx=+btn.getAttribute('data-fix'); const issue=issues[idx]; if(issue && issue.fix){ issue.fix(); this.applyStyles(); this.captureSnapshot('fix:'+issue.code); this.runValidation(); }}));
+        if(anyFixable){
+            container.querySelector('#fix-all-btn').addEventListener('click',()=>{
+                issues.forEach(iss=>{ if(iss.fix) iss.fix(); });
+                this.applyStyles();
+                this.captureSnapshot('fix-all');
+                this.runValidation();
+            });
+        }
+    }
+    computeValidationIssues(){
+        const out=[]; const all=[...this.preview.querySelectorAll('*')];
+        all.forEach(el=>{
+            if(!el.dataset.styles) return;
+            let st; try{ st=JSON.parse(el.dataset.styles);}catch{ return; }
+            const desk=st.desktop||{}; if(desk.flexGrow && desk.width && /%|px/.test(desk.width)) out.push({code:'flex-width', message:'Element has both flexGrow and fixed width; consider removing width for flexible layout.', fix:()=>{ delete desk.width; el.dataset.styles=JSON.stringify(st);} });
+            if(!el.children.length && !el.textContent.trim()) out.push({code:'empty-leaf', message:'Empty leaf element (no text or children).', fix:()=>{ el.textContent='Placeholder'; }});
+            if(el.children.length && !el.classList.contains('grid-container') && !el.classList.contains('row') && !el.classList.contains('col')) out.push({code:'untyped-container', message:'Non-semantic container; consider adding a semantic tag/class.', fix:null});
+        });
+        return out;
+    }
+    // ===== New: Components =====
+    loadComponents(){ try{ const json=localStorage.getItem('cssLayout:components'); this._components=json? JSON.parse(json):[]; }catch{ this._components=[]; } }
+    saveComponents(){ try{ localStorage.setItem('cssLayout:components', JSON.stringify(this._components)); }catch(_){} }
+    updateComponentSaveButton(){ const btn=this.app.querySelector('#save-component-btn'); if(btn) btn.disabled = !this.selectedElement || !this.app.querySelector('#component-name').value.trim(); }
+    saveCurrentComponent(){ if(!this.selectedElement) return; const name=this.app.querySelector('#component-name').value.trim(); if(!name) return; this._components.push({name, html:this.selectedElement.outerHTML}); this.saveComponents(); this.renderComponentList(); }
+    renderComponentList(){ const list=this.app.querySelector('#component-list'); if(!list) return; list.innerHTML = this._components.map((c,i)=>`<li><button data-insert-comp="${i}" title="Insert component">${c.name}</button></li>`).join(''); list.querySelectorAll('button[data-insert-comp]').forEach(btn=> btn.addEventListener('click',()=>{ const idx=+btn.getAttribute('data-insert-comp'); const comp=this._components[idx]; if(!comp) return; const tpl=document.createElement('template'); tpl.innerHTML=comp.html.trim(); const node=tpl.content.firstElementChild; if(node){ this.preview.appendChild(node); this.applyStyles(); this.captureSnapshot('insert-comp'); } })); }
 }
 
 new CSSEditor(document.getElementById('app'));

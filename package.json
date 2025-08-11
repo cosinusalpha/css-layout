@@ -10,7 +10,8 @@
   "scripts": {
   "test:runtime": "node test/runtime-check.js",
   "build": "node scripts/build.mjs",
-  "build:docs": "npm run build && rm -rf docs && cp -r dist docs"
+  "build:docs": "npm run build && rm -rf docs && cp -r dist docs",
+  "dev": "node scripts/dev.mjs"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"
