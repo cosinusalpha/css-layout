@@ -112,7 +112,7 @@ PRs welcome. Keep additions framework-free (vanilla JS + minimal CSS) unless com
 
 ## 📄 License
 
-TBD (to be added).
+MIT
 
 ---
 Enjoy building layouts. Feedback & ideas are appreciated!
